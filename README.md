@@ -66,5 +66,7 @@ Format:
 
 ## AI Disclosure
 
-This project uses OpenAI Codex as a coding assistant. Per hackathon rule 8, this must be declared
-in the final submission.
+This project uses OpenAI Codex as a coding assistant.
+
+<!-- Per hackathon rule 8, this must be declared
+in the final submission. -->
