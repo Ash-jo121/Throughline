@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from throughline.config import configure_environment
 from throughline.tickets import normalize_ticket
 
 configure_environment()
+
+logger = logging.getLogger(__name__)
 
 
 class IncidentBrief(BaseModel):
@@ -22,10 +25,10 @@ class IncidentBrief(BaseModel):
     component: str
     title: str
     probable_cause: str
-    matched_incident_id: str | None
+    matched_incident_id: str | None = None
     why_related: str
     recommended_fix: str
-    suggested_owner: str | None
+    suggested_owner: str | None = None
     also_affected: list[str] = Field(default_factory=list)
     confidence: Literal["high", "medium", "low"]
     related: list[str] = Field(default_factory=list)
@@ -39,9 +42,12 @@ async def synthesize_brief(ticket: dict[str, Any], recall_output: str) -> Incide
     if os.getenv("LLM_API_KEY"):
         try:
             return await _synthesize_with_llm(normalized, recall_output)
-        except Exception:
-            # A deterministic fallback keeps the product path available if JSON-mode parsing fails.
-            pass
+        except (json.JSONDecodeError, ValidationError, ValueError) as error:
+            logger.warning(
+                "LLM brief synthesis returned invalid structured output; using deterministic "
+                "fallback.",
+                exc_info=error,
+            )
 
     return _synthesize_deterministic(normalized, recall_output)
 
@@ -50,7 +56,7 @@ async def _synthesize_with_llm(ticket: dict[str, Any], recall_output: str) -> In
     from openai import AsyncOpenAI
 
     client = AsyncOpenAI(api_key=os.environ["LLM_API_KEY"])
-    response = await client.responses.create(
+    response = await client.responses.parse(
         model=os.getenv("THROUGHLINE_SYNTH_MODEL", "gpt-4.1-mini"),
         input=[
             {
@@ -59,7 +65,7 @@ async def _synthesize_with_llm(ticket: dict[str, Any], recall_output: str) -> In
                     "You write concise incident briefs from an incoming support ticket and "
                     "Cognee graph recall. Use only facts present in the ticket or recall. "
                     "Do not invent PR numbers, engineers, customers, or incident ids. "
-                    "Return JSON only."
+                    "Return a complete IncidentBrief. Use null for unknown optional fields."
                 ),
             },
             {
@@ -73,12 +79,11 @@ async def _synthesize_with_llm(ticket: dict[str, Any], recall_output: str) -> In
                 ),
             },
         ],
-        text={"format": {"type": "json_object"}},
+        text_format=IncidentBrief,
     )
-    payload = json.loads(response.output_text)
-    payload.setdefault("brief_id", str(uuid4()))
-    payload.setdefault("generated_at", datetime.now(UTC).isoformat())
-    return IncidentBrief.model_validate(payload)
+    if response.output_parsed is None:
+        raise ValueError("OpenAI returned no parsed IncidentBrief")
+    return response.output_parsed
 
 
 def _synthesize_deterministic(ticket: dict[str, Any], recall_output: str) -> IncidentBrief:
