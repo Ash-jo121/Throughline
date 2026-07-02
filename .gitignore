@@ -1,8 +1,15 @@
 .venv/
 .env
 .cognee/
+.throughline/
 .pytest_cache/
 .ruff_cache/
 __pycache__/
 *.py[cod]
 *.egg-info/
+frontend/node_modules/
+frontend/.npm-cache/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.d.ts
+frontend/vite.config.js

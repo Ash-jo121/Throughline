@@ -1,5 +1,7 @@
 cognee>=1.0
+fastapi
 pytest
 pytest-asyncio
 python-dotenv
 ruff
+uvicorn

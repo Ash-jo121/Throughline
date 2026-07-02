@@ -7,6 +7,9 @@ through the knowledge graph so a new customer escalation can surface the fix tha
 Day 1 is intentionally narrow: prove the command-line memory spine with local seed data, Cognee
 `remember()`, Cognee `recall()`, and a passing cross-component acceptance test.
 
+Day 2 adds the shareable incident brief layer: customer alias resolution, structured brief
+synthesis, SQLite-backed brief URLs, a FastAPI surface, and a minimal dashboard.
+
 ## Why Cognee Matters Here
 
 The hero path is graph-first:
@@ -64,6 +67,28 @@ Run the acceptance gate:
 .\.venv\Scripts\python.exe -m pytest tests\test_recall.py
 ```
 
+Run the Day 2 synthesizer gate:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_synthesize.py tests\test_service.py
+```
+
+Start the API:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn api.app:app --reload
+```
+
+Start the dashboard:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Then open `http://localhost:5173/?brief_id=<brief_id>`.
+
 Format:
 
 ```powershell
@@ -72,5 +97,6 @@ Format:
 
 ## AI Disclosure
 
-This project uses OpenAI Codex as a coding assistant. Per hackathon rule 8, this must be declared
-in the final submission.
+This project uses OpenAI Codex and Claude as coding assistants. Per hackathon rule 8, this must be
+declared in the final submission. The synthesizer defaults to OpenAI model `gpt-4.1-mini` via the
+OpenAI SDK when `LLM_API_KEY` is available.
