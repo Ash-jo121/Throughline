@@ -61,15 +61,12 @@ PAST_INCIDENTS = [
 INCOMING_TICKET = {
     "id": "JIRA-4821",
     "date": "2025-07-05",
+    "raw_customer": "acme_corp",
     "component": "PaymentService",
     "summary": "Payments failing intermittently at checkout.",
-    "customer": {
-        "name": "Acme Corp",
-        "tier": "enterprise",
-    },
     "sentry_error": {
         "error_class": "StripeTimeout",
-        "service": "checkout-api",
+        "service": "billing-worker",
     },
 }
 

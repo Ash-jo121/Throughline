@@ -14,6 +14,8 @@ COGNEE_CACHE_ROOT = COGNEE_ROOT / "cache"
 COGNEE_LOGS_ROOT = COGNEE_ROOT / "logs"
 COGNEE_HOME_ROOT = COGNEE_ROOT / "home"
 DATASET_NAME = "throughline_day1"
+APP_STATE_ROOT = PROJECT_ROOT / ".throughline"
+BRIEF_DB_PATH = APP_STATE_ROOT / "throughline.db"
 
 
 def configure_environment() -> None:

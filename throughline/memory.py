@@ -12,6 +12,7 @@ configure_environment()
 import cognee  # noqa: E402
 from cognee import SearchType  # noqa: E402
 from throughline.ontology import ThroughlineGraph  # noqa: E402
+from throughline.tickets import normalize_ticket  # noqa: E402
 
 
 EXTRACTION_PROMPT = """Extract a Throughline customer-escalation memory graph.
@@ -132,12 +133,13 @@ async def remember_ticket(record: dict[str, Any]) -> None:
     """Write one incoming ticket signal to the Cognee graph."""
 
     require_llm_key()
+    normalized = normalize_ticket(record)
     await cognee.remember(
-        serialize_ticket(record),
+        serialize_ticket(normalized),
         dataset_name=DATASET_NAME,
         graph_model=ThroughlineGraph,
         custom_prompt=EXTRACTION_PROMPT,
-        node_set=["throughline", "tickets", record["component"]],
+        node_set=["throughline", "tickets", normalized["component"]],
         self_improvement=True,
     )
 
