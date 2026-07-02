@@ -52,6 +52,12 @@ Run the hero recall:
 .\.venv\Scripts\python.exe scripts\demo_recall.py
 ```
 
+Probe the make-or-break graph merge for `PaymentService`:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\probe_graph.py
+```
+
 Run the acceptance gate:
 
 ```powershell
@@ -66,7 +72,5 @@ Format:
 
 ## AI Disclosure
 
-This project uses OpenAI Codex as a coding assistant.
-
-<!-- Per hackathon rule 8, this must be declared
-in the final submission. -->
+This project uses OpenAI Codex as a coding assistant. Per hackathon rule 8, this must be declared
+in the final submission.
