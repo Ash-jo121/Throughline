@@ -58,8 +58,28 @@ PAST_INCIDENTS = [
     },
 ]
 
+INCOMING_TICKET = {
+    "id": "JIRA-4821",
+    "date": "2025-07-05",
+    "component": "PaymentService",
+    "summary": "Payments failing intermittently at checkout.",
+    "customer": {
+        "name": "Acme Corp",
+        "tier": "enterprise",
+    },
+    "sentry_error": {
+        "error_class": "StripeTimeout",
+        "service": "checkout-api",
+    },
+}
+
 HERO_QUERY = (
     "Acme Corp reports payments failing intermittently at checkout in PaymentService. "
     "Correlated Sentry error: StripeTimeout in PaymentService. Have we seen this before "
     "and what fixed it?"
+)
+
+COMPONENT_PROBE_QUERY = (
+    "List every past incident that occurred in PaymentService. Return incident IDs and fixes only. "
+    "Do not include incidents from any other component."
 )

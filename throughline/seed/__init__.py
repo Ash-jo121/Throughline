@@ -1,3 +1,8 @@
-from throughline.seed.incidents import HERO_QUERY, PAST_INCIDENTS
+from throughline.seed.incidents import (
+    COMPONENT_PROBE_QUERY,
+    HERO_QUERY,
+    INCOMING_TICKET,
+    PAST_INCIDENTS,
+)
 
-__all__ = ["HERO_QUERY", "PAST_INCIDENTS"]
+__all__ = ["COMPONENT_PROBE_QUERY", "HERO_QUERY", "INCOMING_TICKET", "PAST_INCIDENTS"]

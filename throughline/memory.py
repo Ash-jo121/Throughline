@@ -27,6 +27,10 @@ relationships:
 - Incident RESOLVED_BY PullRequest.
 - PullRequest AUTHORED_BY Engineer.
 
+Canonicalization rule: if two records mention the exact same component name, they refer to the
+same Component node. In particular, every mention of "PaymentService" must resolve to one shared
+Component named PaymentService, not separate duplicate PaymentService components.
+
 If a record names a past incident and a resolving PR, make the Incident, Component, PullRequest,
 Engineer, and affected Customer entities explicit. The shared Component node is the most important
 join key for future recall.
@@ -71,6 +75,37 @@ def serialize_incident(record: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def serialize_ticket(record: dict[str, Any]) -> str:
+    """Turn an incoming ticket signal into extraction-friendly text."""
+
+    customer = record["customer"]
+    sentry = record.get("sentry_error")
+    lines = [
+        "Throughline incoming customer ticket signal.",
+        f"Ticket {record['id']} was created on {record['date']}.",
+        f"Customer {customer['name']} with tier {customer['tier']} RAISED Ticket {record['id']}.",
+        f"Ticket {record['id']} summary: {record['summary']}",
+        f"Ticket {record['id']} OCCURS_IN Component {record['component']}.",
+        (
+            f"Canonical component join key: Component {record['component']} is the same "
+            f"Component node used by past incidents in {record['component']}."
+        ),
+    ]
+
+    if sentry:
+        lines.extend(
+            [
+                (f"Ticket {record['id']} MANIFESTS_AS SentryError {sentry['error_class']}."),
+                (
+                    f"SentryError {sentry['error_class']} OCCURS_IN Component "
+                    f"{record['component']} and service {sentry['service']}."
+                ),
+            ]
+        )
+
+    return "\n".join(lines)
+
+
 def require_llm_key() -> None:
     if not os.getenv("LLM_API_KEY"):
         raise RuntimeError(
@@ -89,7 +124,21 @@ async def remember_incident(record: dict[str, Any]) -> None:
         graph_model=ThroughlineGraph,
         custom_prompt=EXTRACTION_PROMPT,
         node_set=["throughline", "incidents", record["component"]],
-        self_improvement=False,
+        self_improvement=True,
+    )
+
+
+async def remember_ticket(record: dict[str, Any]) -> None:
+    """Write one incoming ticket signal to the Cognee graph."""
+
+    require_llm_key()
+    await cognee.remember(
+        serialize_ticket(record),
+        dataset_name=DATASET_NAME,
+        graph_model=ThroughlineGraph,
+        custom_prompt=EXTRACTION_PROMPT,
+        node_set=["throughline", "tickets", record["component"]],
+        self_improvement=True,
     )
 
 
@@ -153,6 +202,10 @@ def _result_text(result: Any) -> str:
     text = getattr(result, "text", None)
     if text:
         return str(text)
+
+    content = getattr(result, "content", None)
+    if content:
+        return str(content)
 
     if isinstance(result, dict):
         for key in ("text", "text_result", "answer", "content"):
