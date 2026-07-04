@@ -199,21 +199,46 @@ dd {
   gap: 8px;
 }
 
+button.secondary,
 .feedback button:nth-child(2) {
   background: #fffdfa;
   color: #1d3a33;
 }
 
+.shareBar {
+  align-items: center;
+  border-top: 1px solid #d7d0c1;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  padding-top: 16px;
+}
+
+.shareBar input {
+  border: 1px solid #b8b1a2;
+  min-height: 42px;
+  min-width: 0;
+  padding: 0 12px;
+}
+
+.shareBar span {
+  color: #6f756f;
+  grid-column: 1 / -1;
+  min-height: 20px;
+}
+
 @media (max-width: 760px) {
   .toolbar,
   .briefHeader,
-  .lookup {
+  .lookup,
+  .feedback {
     align-items: stretch;
     flex-direction: column;
   }
 
   .facts,
-  .bodyGrid {
+  .bodyGrid,
+  .shareBar {
     grid-template-columns: 1fr;
   }
 }
