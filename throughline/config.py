@@ -21,7 +21,7 @@ BRIEF_DB_PATH = APP_STATE_ROOT / "throughline.db"
 def configure_environment() -> None:
     """Load local settings before importing Cognee-heavy modules."""
 
-    load_dotenv(PROJECT_ROOT / ".env")
+    load_dotenv(PROJECT_ROOT / ".env", encoding="utf-8-sig")
     os.environ.setdefault("SYSTEM_ROOT_DIRECTORY", str(COGNEE_SYSTEM_ROOT))
     os.environ.setdefault("DATA_ROOT_DIRECTORY", str(COGNEE_DATA_ROOT))
     os.environ.setdefault("CACHE_ROOT_DIRECTORY", str(COGNEE_CACHE_ROOT))

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import inspect
 import os
+from dataclasses import dataclass
 from collections.abc import Iterable
 from typing import Any
+from uuid import UUID
 
 from throughline.config import DATASET_NAME, configure_environment
 
@@ -11,6 +13,7 @@ configure_environment()
 
 import cognee  # noqa: E402
 from cognee import SearchType  # noqa: E402
+from cognee.memory import FeedbackEntry  # noqa: E402
 from throughline.ontology import ThroughlineGraph  # noqa: E402
 from throughline.tickets import normalize_ticket  # noqa: E402
 
@@ -45,6 +48,19 @@ component, error class, or customer with the incoming escalation. Return the rel
 component, why it is related, and the pull request or fix that resolved it. Do not present an
 unrelated incident as the resolution.
 """
+
+
+@dataclass(frozen=True)
+class RecallResult:
+    text: str
+    session_id: str | None = None
+    qa_id: str | None = None
+
+    def __str__(self) -> str:
+        return self.text
+
+    def lower(self) -> str:
+        return self.text.lower()
 
 
 def serialize_incident(record: dict[str, Any]) -> str:
@@ -115,11 +131,11 @@ def require_llm_key() -> None:
         )
 
 
-async def remember_incident(record: dict[str, Any]) -> None:
+async def remember_incident(record: dict[str, Any]) -> list[str]:
     """Write one incident/ticket record to the Cognee graph."""
 
     require_llm_key()
-    await cognee.remember(
+    result = await cognee.remember(
         serialize_incident(record),
         dataset_name=DATASET_NAME,
         graph_model=ThroughlineGraph,
@@ -127,14 +143,15 @@ async def remember_incident(record: dict[str, Any]) -> None:
         node_set=["throughline", "incidents", record["component"]],
         self_improvement=True,
     )
+    return _data_ids(result)
 
 
-async def remember_ticket(record: dict[str, Any]) -> None:
+async def remember_ticket(record: dict[str, Any]) -> list[str]:
     """Write one incoming ticket signal to the Cognee graph."""
 
     require_llm_key()
     normalized = normalize_ticket(record)
-    await cognee.remember(
+    result = await cognee.remember(
         serialize_ticket(normalized),
         dataset_name=DATASET_NAME,
         graph_model=ThroughlineGraph,
@@ -142,9 +159,15 @@ async def remember_ticket(record: dict[str, Any]) -> None:
         node_set=["throughline", "tickets", normalized["component"]],
         self_improvement=True,
     )
+    return _data_ids(result)
 
 
-async def recall_related(query: str) -> str:
+async def recall_related(
+    query: str,
+    *,
+    session_id: str | None = None,
+    feedback_influence: float = 0.5,
+) -> RecallResult:
     """Query Cognee graph memory for related incidents and fixes."""
 
     require_llm_key()
@@ -156,8 +179,55 @@ async def recall_related(query: str) -> str:
         auto_route=False,
         system_prompt=RECALL_PROMPT,
         include_references=True,
+        session_id=session_id,
+        feedback_influence=feedback_influence,
     )
-    return "\n\n".join(_result_text(result) for result in _flatten(results) if _result_text(result))
+    text = "\n\n".join(_result_text(result) for result in _flatten(results) if _result_text(result))
+    qa_id = await _latest_qa_id(session_id) if session_id else None
+    return RecallResult(text=text, session_id=session_id, qa_id=qa_id)
+
+
+async def improve_from_feedback(
+    *,
+    session_id: str | None,
+    qa_id: str | None,
+    verdict: str,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Attach user feedback to a recall session and run Cognee improve()."""
+
+    require_llm_key()
+    score = 1 if verdict == "up" else -1
+    result: dict[str, Any] = {"feedback_score": score}
+
+    if session_id and qa_id:
+        feedback = FeedbackEntry(qa_id=qa_id, feedback_text=note, feedback_score=score)
+        remember_result = await cognee.remember(
+            feedback,
+            dataset_name=DATASET_NAME,
+            session_id=session_id,
+        )
+        if not remember_result:
+            raise RuntimeError(remember_result.error or "Cognee feedback remember failed")
+        result["feedback_entry_id"] = getattr(remember_result, "entry_id", qa_id)
+        result["session_id"] = session_id
+        await cognee.improve(dataset=DATASET_NAME, session_ids=[session_id])
+        result["improve_scope"] = "session"
+    else:
+        await cognee.improve(dataset=DATASET_NAME)
+        result["improve_scope"] = "dataset"
+
+    return result
+
+
+async def forget_customer_data(data_ids: Iterable[str]) -> list[dict[str, Any]]:
+    """Forget specific customer-owned records while leaving shared incident memory intact."""
+
+    require_llm_key()
+    results = []
+    for data_id in data_ids:
+        results.append(await cognee.forget(dataset=DATASET_NAME, data_id=UUID(str(data_id))))
+    return results
 
 
 async def reset_memory() -> None:
@@ -217,3 +287,24 @@ def _result_text(result: Any) -> str:
             return str(result["search_result"])
 
     return str(result)
+
+
+def _data_ids(result: Any) -> list[str]:
+    items = getattr(result, "items", []) or []
+    return [str(item["id"]) for item in items if isinstance(item, dict) and item.get("id")]
+
+
+async def _latest_qa_id(session_id: str | None) -> str | None:
+    if not session_id:
+        return None
+
+    session_api = getattr(cognee, "session", None)
+    get_session = getattr(session_api, "get_session", None)
+    if get_session is None:
+        return None
+
+    entries = await get_session(session_id=session_id)
+    if not entries:
+        return None
+
+    return str(getattr(entries[-1], "qa_id", "") or "") or None
