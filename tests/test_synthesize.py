@@ -17,7 +17,8 @@ PR #1290, "Add exponential backoff to Stripe webhook retries", authored by Priya
 """
 
 
-async def test_synthesize_brief_names_paymentservice_backoff_fix() -> None:
+async def test_synthesize_brief_names_paymentservice_backoff_fix(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_API_KEY", "")
     ticket = normalize_ticket(INCOMING_TICKET)
     brief = await synthesize_brief(ticket, RECALL_OUTPUT)
     persist_brief(brief)
