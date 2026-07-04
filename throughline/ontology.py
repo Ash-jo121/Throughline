@@ -11,25 +11,30 @@ except ImportError:  # pragma: no cover - supports older Cognee package layouts.
 
 
 class Engineer(DataPoint):
+    metadata: dict = {"index_fields": ["name"]}
     name: str = Field(description="Canonical engineer name.")
 
 
 class Component(DataPoint):
+    metadata: dict = {"index_fields": ["name"]}
     name: str = Field(description="Canonical service or product component name.")
 
 
 class Customer(DataPoint):
+    metadata: dict = {"index_fields": ["name"]}
     name: str = Field(description="Canonical customer account name.")
     tier: str = Field(default="unknown", description="Customer tier when known.")
 
 
 class PullRequest(DataPoint):
+    metadata: dict = {"index_fields": ["pr_id"]}
     pr_id: str = Field(description="Pull request identifier, for example PR #1290.")
     title: str = Field(description="Pull request title.")
     author: Engineer = Field(description="Engineer who authored the pull request.")
 
 
 class Incident(DataPoint):
+    metadata: dict = {"index_fields": ["incident_id"]}
     incident_id: str = Field(description="Incident identifier, for example INC-2024-11.")
     date: str = Field(description="Incident date or month.")
     summary: str = Field(description="Incident summary, impact, root cause, and resolution.")
@@ -42,12 +47,14 @@ class Incident(DataPoint):
 
 
 class SentryError(DataPoint):
+    metadata: dict = {"index_fields": ["error_class", "service"]}
     error_class: str = Field(description="Sentry error class.")
     component: Component = Field(description="Component where the error occurs.")
     service: str = Field(description="Service emitting the error.")
 
 
 class Ticket(DataPoint):
+    metadata: dict = {"index_fields": ["ticket_id"]}
     ticket_id: str = Field(description="Ticket identifier, for example JIRA-4821.")
     summary: str = Field(description="Ticket summary.")
     customer: Customer = Field(description="Customer who raised the ticket.")
@@ -61,6 +68,7 @@ class Ticket(DataPoint):
 class ThroughlineGraph(DataPoint):
     """Cognee extraction schema for one support-memory record."""
 
+    metadata: dict = {"index_fields": []}
     incident: Incident | None = Field(
         default=None,
         description="Past incident and its resolution.",

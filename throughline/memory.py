@@ -12,6 +12,7 @@ from throughline.config import DATASET_NAME, configure_environment
 configure_environment()
 
 import cognee  # noqa: E402
+from cognee.exceptions.exceptions import CogneeValidationError  # noqa: E402
 from cognee import SearchType  # noqa: E402
 from cognee.memory import FeedbackEntry  # noqa: E402
 from throughline.ontology import ThroughlineGraph  # noqa: E402
@@ -171,17 +172,29 @@ async def recall_related(
     """Query Cognee graph memory for related incidents and fixes."""
 
     require_llm_key()
-    results = await cognee.recall(
-        query_text=query,
-        query_type=SearchType.GRAPH_COMPLETION,
-        datasets=[DATASET_NAME],
-        top_k=8,
-        auto_route=False,
-        system_prompt=RECALL_PROMPT,
-        include_references=True,
-        session_id=session_id,
-        feedback_influence=feedback_influence,
-    )
+    try:
+        results = await cognee.recall(
+            query_text=query,
+            query_type=SearchType.GRAPH_COMPLETION,
+            datasets=[DATASET_NAME],
+            top_k=8,
+            auto_route=False,
+            system_prompt=RECALL_PROMPT,
+            include_references=True,
+            session_id=session_id,
+            feedback_influence=feedback_influence,
+        )
+    except CogneeValidationError as error:
+        if "RecallPreconditionError" not in str(error):
+            raise
+        return RecallResult(
+            text=(
+                "No prior Throughline memory is available yet. "
+                "Generate this brief, then remember the Jira ticket for future recall."
+            ),
+            session_id=session_id,
+            qa_id=None,
+        )
     text = "\n\n".join(_result_text(result) for result in _flatten(results) if _result_text(result))
     qa_id = await _latest_qa_id(session_id) if session_id else None
     return RecallResult(text=text, session_id=session_id, qa_id=qa_id)
