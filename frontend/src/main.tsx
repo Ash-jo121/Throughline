@@ -341,7 +341,7 @@ function Dashboard({
 
       <section className="statsGrid" aria-label="Memory stats">
         <StatCard label="Incidents tracked" value={String(stats.total)} />
-        <StatCard label="Past fixes surfaced" value={`${stats.fixes} of ${stats.total}`} />
+        <StatCard label="Prior context surfaced" value={`${stats.matches} of ${stats.total}`} />
         <StatCard label="Customers affected" value={String(stats.customers)} />
         <StatCard label="High-confidence briefs" value={String(stats.highConfidence)} />
       </section>
@@ -357,7 +357,7 @@ function Dashboard({
               <span>Incident</span>
               <span>Customer</span>
               <span>Component</span>
-              <span>Past fix</span>
+              <span>Prior context</span>
               <span>Confidence</span>
               <span>Generated</span>
             </div>
@@ -457,7 +457,7 @@ function BriefDetail({
           <dd>{brief.suggested_owner ?? "Unassigned"}</dd>
         </div>
         <div>
-          <dt>Matched</dt>
+          <dt>Prior match</dt>
           <dd>{brief.matched_incident_id ?? "No prior match"}</dd>
         </div>
       </dl>
@@ -472,10 +472,10 @@ function BriefDetail({
           <ChipList values={brief.also_affected} empty="None found" />
         </div>
         <div className="panel">
-          <h3>Related Incidents</h3>
+          <h3>Related Records</h3>
           <ChipList
             values={brief.matched_incident_id ? brief.related : []}
-            empty="No related incident ids"
+            empty="No related records"
           />
         </div>
       </section>
@@ -589,7 +589,7 @@ function dashboardStats(briefs: IncidentBrief[]) {
   const customers = distinctCustomers(briefs);
   return {
     total: briefs.length,
-    fixes: briefs.filter((brief) => Boolean(brief.matched_incident_id)).length,
+    matches: briefs.filter((brief) => Boolean(brief.matched_incident_id)).length,
     customers: customers.length,
     highConfidence: briefs.filter((brief) => brief.confidence === "high").length
   };

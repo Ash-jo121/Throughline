@@ -131,6 +131,7 @@ def _sanitize_brief(
         if brief.matched_incident_id not in related:
             related.insert(0, brief.matched_incident_id)
         brief.related = related
+        _normalize_match_language(brief, ticket, recall_text)
 
     assignee = ticket.get("assignee")
     if assignee:
@@ -161,6 +162,48 @@ def _candidate_shares_ticket_signal(ref: str, ticket: dict[str, Any], recall_tex
         if error_class and error_class in lowered:
             return True
     return False
+
+
+def _normalize_match_language(
+    brief: IncidentBrief,
+    ticket: dict[str, Any],
+    recall_text: str,
+) -> None:
+    matched_ref = brief.matched_incident_id
+    if not matched_ref:
+        return
+
+    component = str(ticket.get("component") or "the same component")
+    sentry = ticket.get("sentry_error") or {}
+    error_class = str(sentry.get("error_class") or "").strip()
+    signals = [component]
+    if error_class:
+        signals.append(error_class)
+
+    if _is_jira_ref(matched_ref):
+        brief.why_related = (
+            f"{matched_ref} is an earlier Jira ticket with the same "
+            f"{' and '.join(signals)} signal. Treat it as prior context for triage; "
+            "it is not marked as a confirmed fix unless a resolving PR is present."
+        )
+        if not _first_pr_number(" ".join([recall_text, brief.recommended_fix])):
+            brief.recommended_fix = (
+                f"Prior ticket {matched_ref} reports the same {component}"
+                f"{f'/{error_class}' if error_class else ''} pattern. Review that ticket for "
+                "triage context; no confirmed fix is recorded yet."
+            )
+        if brief.confidence == "high":
+            brief.confidence = "medium"
+        return
+
+    brief.why_related = (
+        f"{matched_ref} is the best graph match because it shares "
+        f"{' and '.join(signals)} with this ticket."
+    )
+
+
+def _is_jira_ref(ref: str) -> bool:
+    return not ref.upper().startswith("INC-")
 
 
 def _contexts_for_ref(ref: str, recall_text: str) -> list[str]:

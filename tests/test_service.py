@@ -7,6 +7,7 @@ from uuid import uuid4
 from throughline.seed import INCOMING_TICKET
 from throughline.service import build_incident_brief
 from throughline.store import get_brief
+from throughline.tickets import ticket_recall_query
 
 
 async def test_build_incident_brief_recalls_before_persisting(monkeypatch) -> None:
@@ -98,3 +99,24 @@ async def test_build_incident_brief_can_match_prior_jira_ticket(monkeypatch) -> 
     assert brief.matched_incident_id == "KAN-5"
     assert brief.related == ["KAN-5"]
     assert "KAN-6" not in brief.related
+    assert "earlier Jira ticket" in brief.why_related
+    assert "new" not in brief.why_related.lower()
+    assert "no confirmed fix is recorded yet" in brief.recommended_fix
+    assert brief.confidence == "medium"
+
+
+def test_ticket_recall_query_includes_open_prior_tickets() -> None:
+    query = ticket_recall_query(
+        {
+            "id": "KAN-8",
+            "raw_customer": "Replit",
+            "component": "CampaignScheduler",
+            "summary": "Campaign sends are timing out.",
+            "date": "2026-07-05",
+            "sentry_error": {"error_class": "CampaignTimeout"},
+        }
+    )
+
+    assert "same component" in query
+    assert "earlier tickets reporting the same issue" in query
+    assert "even if no fix is known yet" in query

@@ -41,5 +41,7 @@ def ticket_recall_query(ticket: dict[str, Any]) -> str:
     return (
         f"{normalized['customer']['name']} reports {normalized['summary']} "
         f"in {normalized['component']}.{sentry_clause} "
-        "Have we seen this before and what fixed it?"
+        "Have we seen this before in the same component or with the same exact error entity? "
+        "Return either a past incident with a known fix, or earlier tickets reporting the same "
+        "issue even if no fix is known yet. If a fix exists, what was it?"
     )

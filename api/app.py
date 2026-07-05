@@ -140,13 +140,20 @@ def _jira_import_response(issue_key: str, ticket: dict, brief: IncidentBrief) ->
     )
 
 
+async def _remember_ticket_background_logged(ticket: dict) -> None:
+    try:
+        await remember_ticket_background(ticket)
+    except Exception:
+        logger.exception("Ticket memory write failed for %s", ticket.get("id", "unknown"))
+
+
 async def _brief_from_existing_ticket(
     incident: IncidentRequest,
     background_tasks: BackgroundTasks,
 ) -> IncidentResponse:
     ticket = incident.model_dump()
     brief = await build_incident_brief(ticket)
-    background_tasks.add_task(remember_ticket_background, ticket)
+    background_tasks.add_task(_remember_ticket_background_logged, ticket)
     return _incident_response(brief)
 
 
@@ -167,7 +174,7 @@ async def _brief_from_jira_issue_key(
 
     ticket = jira_issue_to_ticket(issue)
     brief = await build_incident_brief(ticket)
-    background_tasks.add_task(remember_ticket_background, ticket)
+    background_tasks.add_task(_remember_ticket_background_logged, ticket)
     return _jira_import_response(str(issue.get("key") or issue_key), ticket, brief)
 
 

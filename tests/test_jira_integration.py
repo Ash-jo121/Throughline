@@ -67,6 +67,36 @@ def test_pull_by_key_import_returns_brief_link(monkeypatch) -> None:
     assert calls == [("build", "ESC-1"), ("remember", "ESC-1")]
 
 
+def test_pull_by_key_import_logs_background_memory_failure(monkeypatch, caplog) -> None:
+    async def fake_build(ticket):
+        return _brief(ticket["id"])
+
+    async def failing_remember(_ticket):
+        raise RuntimeError("Cognee timeout")
+
+    monkeypatch.setattr(
+        "api.app.fetch_jira_issue", lambda issue_key: {"key": issue_key, "fields": {}}
+    )
+    monkeypatch.setattr(
+        "api.app.jira_issue_to_ticket",
+        lambda issue: {
+            "id": issue["key"],
+            "raw_customer": "Acme Corp",
+            "component": "PaymentService",
+            "summary": "Payments failing intermittently at checkout.",
+            "date": "2026-07-05",
+        },
+    )
+    monkeypatch.setattr("api.app.build_incident_brief", fake_build)
+    monkeypatch.setattr("api.app.remember_ticket_background", failing_remember)
+
+    with caplog.at_level("ERROR", logger="api.app"):
+        response = TestClient(app).post("/integrations/jira/issues/ESC-1/brief")
+
+    assert response.status_code == 200
+    assert "Ticket memory write failed for ESC-1" in caplog.text
+
+
 def test_pull_by_key_import_reports_missing_config(monkeypatch) -> None:
     def fake_fetch(_issue_key: str):
         raise JiraConfigError("Missing Jira configuration: JIRA_SITE_URL")
