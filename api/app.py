@@ -174,7 +174,7 @@ async def _brief_from_jira_issue_key(
 
     ticket = jira_issue_to_ticket(issue)
     brief = await build_incident_brief(ticket)
-    background_tasks.add_task(_remember_ticket_background_logged, ticket)
+    await _remember_ticket_background_logged(ticket)
     return _jira_import_response(str(issue.get("key") or issue_key), ticket, brief)
 
 

@@ -156,9 +156,9 @@ def _component_name(
             return _clean_value(re.sub(r"^component[-_]", "", label, flags=re.I))
 
     text = f"{summary}\n{description}"
-    match = re.search(r"\b(?:component|service|area)\s*[:=-]\s*([A-Za-z0-9 ._-]+)", text, re.I)
-    if match:
-        return _clean_value(match.group(1))
+    structured = _structured_field(text, ("component", "service", "area"))
+    if structured:
+        return structured
 
     haystack = " ".join([summary, description, *labels]).lower()
     for candidate in (
@@ -187,9 +187,9 @@ def _customer_name(
             return _clean_value(re.sub(r"^customer[-_]", "", label, flags=re.I))
 
     text = f"{summary}\n{description}"
-    match = re.search(r"\b(?:customer|account)\s*[:=-]\s*([A-Za-z0-9 ._-]+)", text, re.I)
-    if match:
-        return _clean_value(match.group(1))
+    structured = _structured_field(text, ("customer", "account"))
+    if structured:
+        return structured
     if re.search(r"\bacme\b", text, re.I):
         return "Acme Corp"
 
@@ -227,6 +227,10 @@ def _sentry_error(
         return {"error_class": error_class, "service": service}
 
     text = f"{summary}\n{description}"
+    structured = _structured_field(text, ("error", "sentry", "error class"))
+    if structured:
+        return {"error_class": structured, "service": service}
+
     match = re.search(r"\b([A-Z][A-Za-z0-9]+(?:Timeout|Error|Exception|Race))\b", text)
     if match:
         return {"error_class": match.group(1), "service": service}
@@ -250,6 +254,38 @@ def _plain_text(value: Any) -> str:
     if isinstance(value, list):
         return " ".join(text for item in value if (text := _plain_text(item)))
     return str(value)
+
+
+def _structured_field(text: str, names: tuple[str, ...]) -> str | None:
+    labels = (
+        "customer",
+        "account",
+        "component",
+        "service",
+        "area",
+        "error class",
+        "error",
+        "sentry",
+        "status",
+        "problem",
+        "observed behavior",
+        "root cause",
+        "fix",
+        "owner",
+        "impact",
+        "resolution note",
+        "need",
+    )
+    name_pattern = "|".join(re.escape(name) for name in names)
+    stop_pattern = "|".join(re.escape(label) for label in labels)
+    match = re.search(
+        rf"\b(?:{name_pattern})\s*[:=-]\s*(.+?)(?=\s+\b(?:{stop_pattern})\s*[:=-]|\s*$)",
+        text,
+        flags=re.I,
+    )
+    if not match:
+        return None
+    return _clean_value(match.group(1))
 
 
 def _clean_value(value: str) -> str:
