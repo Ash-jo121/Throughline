@@ -427,6 +427,44 @@ dd {
   gap: 8px;
 }
 
+.correctionForm {
+  border-top: 1px solid #d7d0c1;
+  display: grid;
+  gap: 10px;
+  padding-top: 16px;
+}
+
+.correctionForm label {
+  display: grid;
+  gap: 6px;
+}
+
+.correctionForm label span {
+  color: #6a6f6b;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.correctionForm textarea {
+  border: 1px solid #b8b1a2;
+  font: inherit;
+  min-height: 104px;
+  padding: 10px 12px;
+  resize: vertical;
+}
+
+.correctionActions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.correctionActions span {
+  color: #5f6861;
+  min-height: 20px;
+}
+
 button.secondary,
 .feedback button:nth-child(2) {
   background: #fffdfa;
@@ -470,6 +508,7 @@ button.danger:hover {
   .lookup,
   .toolbarActions,
   .feedback,
+  .correctionActions,
   .listHeader,
   .customerRow {
     align-items: stretch;

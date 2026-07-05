@@ -27,6 +27,12 @@ type SourceLink = {
   kind: "jira" | "pull_request" | "sentry" | "other";
 };
 
+type FeedbackResponse = {
+  feedback_id: string;
+  status: string;
+  improve_scope: string;
+};
+
 type ImportResponse = {
   brief_id: string;
   brief_path: string;
@@ -43,6 +49,9 @@ function App() {
   const [briefs, setBriefs] = useState<IncidentBrief[]>([]);
   const [status, setStatus] = useState("Loading incidents...");
   const [feedbackStatus, setFeedbackStatus] = useState("");
+  const [correctionText, setCorrectionText] = useState("");
+  const [correctionStatus, setCorrectionStatus] = useState("");
+  const [correctionSubmitting, setCorrectionSubmitting] = useState(false);
   const [actionStatus, setActionStatus] = useState("");
   const [jiraKey, setJiraKey] = useState("ESC-1");
   const [importing, setImporting] = useState(false);
@@ -73,6 +82,8 @@ function App() {
       setView("dashboard");
       setBrief(null);
       setFeedbackStatus("");
+      setCorrectionText("");
+      setCorrectionStatus("");
       setActionStatus("");
       void loadDashboard({ silent: true });
     };
@@ -107,6 +118,8 @@ function App() {
 
     setStatus("Loading brief...");
     setFeedbackStatus("");
+    setCorrectionText("");
+    setCorrectionStatus("");
     setActionStatus("");
     const response = await fetch(`${apiBase}/briefs/${encodeURIComponent(trimmed)}`);
     if (!response.ok) {
@@ -162,11 +175,54 @@ function App() {
         body: JSON.stringify({ verdict }),
         signal: controller.signal
       });
-      setFeedbackStatus(response.ok ? "Feedback saved. Improve queued." : "Feedback failed.");
+      if (!response.ok) {
+        setFeedbackStatus("Feedback failed.");
+        return;
+      }
+      const data = (await response.json()) as FeedbackResponse;
+      setFeedbackStatus(
+        `Feedback saved. Improve ${data.status === "applied" ? "applied" : "queued"} (${data.improve_scope}).`
+      );
     } catch {
       setFeedbackStatus("Feedback timed out. Try again.");
     } finally {
       window.clearTimeout(timeout);
+    }
+  }
+
+  async function submitCorrection() {
+    if (!brief) return;
+    const note = correctionText.trim();
+    if (!note) {
+      setCorrectionStatus("Enter a correction first.");
+      return;
+    }
+
+    setCorrectionSubmitting(true);
+    setCorrectionStatus("Applying correction to memory...");
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 180000);
+    try {
+      const response = await fetch(`${apiBase}/briefs/${brief.brief_id}/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ verdict: "up", note }),
+        signal: controller.signal
+      });
+      if (!response.ok) {
+        setCorrectionStatus("Correction failed.");
+        return;
+      }
+      const data = (await response.json()) as FeedbackResponse;
+      setCorrectionText("");
+      setCorrectionStatus(
+        `Correction applied to memory (${data.improve_scope}). Future related incidents can use it when recall surfaces the correction.`
+      );
+    } catch {
+      setCorrectionStatus("Correction timed out. Check the API logs and try again.");
+    } finally {
+      window.clearTimeout(timeout);
+      setCorrectionSubmitting(false);
     }
   }
 
@@ -230,6 +286,9 @@ function App() {
     setBrief(nextBrief);
     setView("brief");
     setActionStatus("");
+    setFeedbackStatus("");
+    setCorrectionText("");
+    setCorrectionStatus("");
     const path = `/brief/${encodeURIComponent(nextBrief.brief_id)}`;
     if (navigation === "replace") {
       window.history.replaceState(null, "", path);
@@ -242,6 +301,8 @@ function App() {
     setView("dashboard");
     setBrief(null);
     setFeedbackStatus("");
+    setCorrectionText("");
+    setCorrectionStatus("");
     setActionStatus("");
     window.history.replaceState(null, "", "/");
     void loadDashboard();
@@ -285,8 +346,13 @@ function App() {
           brief={brief}
           briefUrl={briefUrl}
           feedbackStatus={feedbackStatus}
+          correctionText={correctionText}
+          correctionStatus={correctionStatus}
+          correctionSubmitting={correctionSubmitting}
           actionStatus={actionStatus}
           onFeedback={(verdict) => void sendFeedback(verdict)}
+          onCorrectionChange={setCorrectionText}
+          onSubmitCorrection={() => void submitCorrection()}
           onShare={() => void shareBrief()}
         />
       ) : null}
@@ -422,15 +488,25 @@ function BriefDetail({
   brief,
   briefUrl,
   feedbackStatus,
+  correctionText,
+  correctionStatus,
+  correctionSubmitting,
   actionStatus,
   onFeedback,
+  onCorrectionChange,
+  onSubmitCorrection,
   onShare
 }: {
   brief: IncidentBrief;
   briefUrl: string;
   feedbackStatus: string;
+  correctionText: string;
+  correctionStatus: string;
+  correctionSubmitting: boolean;
   actionStatus: string;
   onFeedback: (verdict: "up" | "down") => void;
+  onCorrectionChange: (value: string) => void;
+  onSubmitCorrection: () => void;
   onShare: () => void;
 }) {
   return (
@@ -489,6 +565,30 @@ function BriefDetail({
         </button>
         <span>{feedbackStatus}</span>
       </footer>
+
+      <form
+        className="correctionForm"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmitCorrection();
+        }}
+      >
+        <label>
+          <span>Suggest a better fix (optional)</span>
+          <textarea
+            value={correctionText}
+            onChange={(event) => onCorrectionChange(event.target.value)}
+            placeholder="Example: Backoff alone did not fully resolve this. The durable fix was PR #1350, making webhook handlers idempotent."
+            rows={4}
+          />
+        </label>
+        <div className="correctionActions">
+          <button type="submit" disabled={correctionSubmitting || !correctionText.trim()}>
+            {correctionSubmitting ? "Applying..." : "Submit fix"}
+          </button>
+          <span>{correctionStatus}</span>
+        </div>
+      </form>
 
       <section className="shareBar" aria-label="Share and privacy actions">
         <input value={briefUrl} readOnly aria-label="Shareable brief link" />

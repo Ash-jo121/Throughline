@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import os
 from dataclasses import dataclass
 from collections.abc import Iterable
@@ -18,6 +19,8 @@ from cognee.memory import FeedbackEntry  # noqa: E402
 from throughline.ontology import ThroughlineGraph  # noqa: E402
 from throughline.tickets import normalize_ticket  # noqa: E402
 
+
+logger = logging.getLogger(__name__)
 
 EXTRACTION_PROMPT = """Extract a Throughline customer-escalation memory graph.
 
@@ -49,7 +52,9 @@ shares the same Component node as the incoming escalation, or the same exact Sen
 Do not match on generic words such as timeout, error, failure, retry, or backoff when the component
 or exact error entity differs. Return the related incident or ticket reference, component, why it is
 related, and the pull request or fix that resolved it. If no graph-safe match exists, say no prior
-matching incident or ticket was found.
+matching incident or ticket was found. If session memory contains human feedback or an engineer's
+corrected fix for the related incident, include that corrected fix prominently and identify it as
+engineer-corrected feedback.
 """
 
 
@@ -171,7 +176,7 @@ async def recall_related(
     query: str,
     *,
     session_id: str | None = None,
-    feedback_influence: float = 0.5,
+    feedback_influence: float = 0.85,
 ) -> RecallResult:
     """Query Cognee graph memory for related incidents and fixes."""
 
@@ -210,6 +215,8 @@ async def improve_from_feedback(
     qa_id: str | None,
     verdict: str,
     note: str | None = None,
+    incident_ref: str | None = None,
+    component: str | None = None,
 ) -> dict[str, Any]:
     """Attach user feedback to a recall session and run Cognee improve()."""
 
@@ -225,16 +232,72 @@ async def improve_from_feedback(
             session_id=session_id,
         )
         if not remember_result:
-            raise RuntimeError(remember_result.error or "Cognee feedback remember failed")
+            error_message = getattr(remember_result, "error", None) or "Cognee feedback remember failed"
+            if not _is_missing_session_qa_error(error_message):
+                raise RuntimeError(error_message)
+
+            logger.warning(
+                "Cognee session feedback target was stale; falling back to dataset improve: %s",
+                error_message,
+            )
+            if note:
+                await _remember_feedback_correction(
+                    note=note,
+                    score=score,
+                    incident_ref=incident_ref,
+                    component=component,
+                )
+            await cognee.improve(dataset=DATASET_NAME)
+            result["improve_scope"] = "dataset"
+            result["fallback_reason"] = "session_qa_not_found"
+            return result
+
         result["feedback_entry_id"] = getattr(remember_result, "entry_id", qa_id)
         result["session_id"] = session_id
         await cognee.improve(dataset=DATASET_NAME, session_ids=[session_id])
         result["improve_scope"] = "session"
     else:
+        if note:
+            await _remember_feedback_correction(
+                note=note,
+                score=score,
+                incident_ref=incident_ref,
+                component=component,
+            )
         await cognee.improve(dataset=DATASET_NAME)
         result["improve_scope"] = "dataset"
 
     return result
+
+
+async def _remember_feedback_correction(
+    *,
+    note: str,
+    score: int,
+    incident_ref: str | None,
+    component: str | None,
+) -> None:
+    """Persist an engineer correction as ordinary memory when session feedback cannot attach."""
+
+    target = incident_ref or "unknown incident"
+    component_text = f" in Component {component}" if component else ""
+    await cognee.remember(
+        (
+            "Throughline engineer-corrected feedback memory.\n"
+            f"Engineer feedback score: {score}.\n"
+            f"Engineer correction for {target}{component_text}: {note}\n"
+            "For future recalls about the same incident, component, or matching ticket, prefer this "
+            "engineer-corrected fix over the original generated recommendation."
+        ),
+        dataset_name=DATASET_NAME,
+        node_set=["throughline", "feedback", component or "general"],
+        self_improvement=True,
+    )
+
+
+def _is_missing_session_qa_error(error: object) -> bool:
+    text = str(error).lower()
+    return "qa" in text and "not found" in text and "session" in text
 
 
 async def forget_customer_data(data_ids: Iterable[str]) -> list[dict[str, Any]]:

@@ -82,6 +82,9 @@ async def _synthesize_with_llm(ticket: dict[str, Any], recall_output: str) -> In
                     "matched_incident_id to null, related to [], confidence to low, and "
                     "explain that no graph-safe match was found. Jira issue keys such as "
                     "KAN-5 are valid matched_incident_id values when recall supports them. "
+                    "If the recall output contains human feedback or an engineer's corrected "
+                    "fix, prefer that corrected fix in recommended_fix and note that it was "
+                    "confirmed or corrected by an engineer. "
                     "Return a complete IncidentBrief. Use null for unknown optional fields."
                 ),
             },

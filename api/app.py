@@ -94,7 +94,7 @@ class WebhookAcceptedResponse(BaseModel):
 
 
 class FeedbackRequest(BaseModel):
-    verdict: Literal["up", "down"]
+    verdict: Literal["up", "down"] = "up"
     note: str | None = None
 
 
@@ -322,6 +322,8 @@ async def _improve_feedback_background(
     qa_id: str | None,
     verdict: str,
     note: str | None,
+    incident_ref: str | None = None,
+    component: str | None = None,
 ) -> None:
     try:
         await improve_from_feedback(
@@ -329,6 +331,8 @@ async def _improve_feedback_background(
             qa_id=qa_id,
             verdict=verdict,
             note=note,
+            incident_ref=incident_ref,
+            component=component,
         )
     except Exception:
         logger.exception("Feedback improve failed for qa_id=%s", qa_id)
@@ -340,16 +344,35 @@ async def create_feedback(
     feedback: FeedbackRequest,
     background_tasks: BackgroundTasks,
 ) -> FeedbackResponse:
-    if get_brief(brief_id) is None:
+    brief = get_brief(brief_id)
+    if brief is None:
         raise HTTPException(status_code=404, detail="Brief not found")
-    feedback_id = persist_feedback(brief_id, feedback.verdict, feedback.note)
+    note = feedback.note.strip() if feedback.note else None
+    feedback_id = persist_feedback(brief_id, feedback.verdict, note)
     refs = get_brief_memory_refs(brief_id)
+    if note:
+        improve_result = await improve_from_feedback(
+            session_id=refs.session_id if refs else None,
+            qa_id=refs.qa_id if refs else None,
+            verdict=feedback.verdict,
+            note=note,
+            incident_ref=brief.incident_ref,
+            component=brief.component,
+        )
+        return FeedbackResponse(
+            feedback_id=feedback_id,
+            status="applied",
+            improve_scope=str(improve_result["improve_scope"]),
+        )
+
     background_tasks.add_task(
         _improve_feedback_background,
         session_id=refs.session_id if refs else None,
         qa_id=refs.qa_id if refs else None,
         verdict=feedback.verdict,
-        note=feedback.note,
+        note=note,
+        incident_ref=brief.incident_ref,
+        component=brief.component,
     )
     return FeedbackResponse(
         feedback_id=feedback_id,
