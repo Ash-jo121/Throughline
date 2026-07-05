@@ -55,6 +55,7 @@ function App() {
   const [actionStatus, setActionStatus] = useState("");
   const [jiraKey, setJiraKey] = useState("ESC-1");
   const [importing, setImporting] = useState(false);
+  const [forgettingCustomer, setForgettingCustomer] = useState("");
 
   useEffect(() => {
     if (initialBriefId) {
@@ -84,8 +85,9 @@ function App() {
       setFeedbackStatus("");
       setCorrectionText("");
       setCorrectionStatus("");
-      setActionStatus("");
-      void loadDashboard({ silent: true });
+    setActionStatus("");
+    setForgettingCustomer("");
+    void loadDashboard({ silent: true });
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -227,6 +229,7 @@ function App() {
   }
 
   async function forgetCustomerFromDashboard(customer: string) {
+    if (forgettingCustomer) return;
     const confirmation = window.prompt(
       `This permanently removes all ${customer} customer-owned data from Throughline memory. Type ${customer} to confirm.`
     );
@@ -235,28 +238,43 @@ function App() {
       return;
     }
 
+    setForgettingCustomer(customer);
     setActionStatus(`Forgetting ${customer}...`);
-    const response = await fetch(`${apiBase}/customers/${encodeURIComponent(customer)}/forget`, {
-      method: "POST"
-    });
-    if (!response.ok) {
-      setActionStatus("Delete request failed.");
-      return;
+    const slowForgetTimer = window.setTimeout(() => {
+      setActionStatus(`Still forgetting ${customer}. Cognee is deleting customer-owned memory records...`);
+    }, 5000);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 180000);
+    try {
+      const response = await fetch(`${apiBase}/customers/${encodeURIComponent(customer)}/forget`, {
+        method: "POST",
+        signal: controller.signal
+      });
+      if (!response.ok) {
+        setActionStatus(await errorMessage(response));
+        return;
+      }
+      const data = (await response.json()) as { forgotten_count: number; local_brief_count?: number };
+      setBriefs((current) =>
+        current
+          .filter((item) => item.customer !== customer)
+          .map((item) => ({
+            ...item,
+            also_affected: item.also_affected.filter((affectedCustomer) => affectedCustomer !== customer)
+          }))
+      );
+      setActionStatus(
+        `Forgot ${data.forgotten_count} memory record${data.forgotten_count === 1 ? "" : "s"} and ${
+          data.local_brief_count ?? 0
+        } brief${data.local_brief_count === 1 ? "" : "s"} for ${customer}.`
+      );
+    } catch {
+      setActionStatus("Forget timed out or the API could not be reached. Check the API logs and try again.");
+    } finally {
+      window.clearTimeout(slowForgetTimer);
+      window.clearTimeout(timeout);
+      setForgettingCustomer("");
     }
-    const data = (await response.json()) as { forgotten_count: number; local_brief_count?: number };
-    setBriefs((current) =>
-      current
-        .filter((item) => item.customer !== customer)
-        .map((item) => ({
-          ...item,
-          also_affected: item.also_affected.filter((affectedCustomer) => affectedCustomer !== customer)
-        }))
-    );
-    setActionStatus(
-      `Forgot ${data.forgotten_count} memory record${data.forgotten_count === 1 ? "" : "s"} and ${
-        data.local_brief_count ?? 0
-      } brief${data.local_brief_count === 1 ? "" : "s"} for ${customer}.`
-    );
   }
 
   async function shareBrief() {
@@ -333,6 +351,7 @@ function App() {
           briefs={briefs}
           jiraKey={jiraKey}
           importing={importing}
+          forgettingCustomer={forgettingCustomer}
           actionStatus={actionStatus}
           onJiraKeyChange={setJiraKey}
           onImport={() => void importFromJira()}
@@ -364,6 +383,7 @@ function Dashboard({
   briefs,
   jiraKey,
   importing,
+  forgettingCustomer,
   actionStatus,
   onJiraKeyChange,
   onImport,
@@ -373,6 +393,7 @@ function Dashboard({
   briefs: IncidentBrief[];
   jiraKey: string;
   importing: boolean;
+  forgettingCustomer: string;
   actionStatus: string;
   onJiraKeyChange: (value: string) => void;
   onImport: () => void;
@@ -472,8 +493,13 @@ function Dashboard({
           {customers.map((customer) => (
             <div className="customerRow" key={customer}>
               <span>{customer}</span>
-              <button className="secondary danger" type="button" onClick={() => onForgetCustomer(customer)}>
-                Forget customer
+              <button
+                className="secondary danger"
+                type="button"
+                disabled={Boolean(forgettingCustomer)}
+                onClick={() => onForgetCustomer(customer)}
+              >
+                {forgettingCustomer === customer ? "Forgetting..." : "Forget customer"}
               </button>
             </div>
           ))}
