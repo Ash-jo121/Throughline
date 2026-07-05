@@ -72,6 +72,7 @@ def fetch_jira_issue(issue_key: str) -> dict[str, Any]:
         "created",
         "updated",
         "reporter",
+        "assignee",
         "labels",
         "components",
     ]
@@ -90,6 +91,7 @@ def jira_issue_to_ticket(issue: dict[str, Any]) -> dict[str, Any]:
     component = _component_name(components, labels, summary, description)
     customer = _customer_name(fields, labels, summary, description)
     sentry_error = _sentry_error(labels, summary, description, component)
+    assignee = _user_name(fields.get("assignee"))
 
     return {
         "id": str(issue.get("key") or issue.get("id") or "JIRA-UNKNOWN"),
@@ -100,6 +102,7 @@ def jira_issue_to_ticket(issue: dict[str, Any]) -> dict[str, Any]:
         "sentry_error": sentry_error,
         "source": "jira",
         "source_url": issue.get("url"),
+        "assignee": assignee,
     }
 
 
@@ -196,6 +199,13 @@ def _customer_name(
         if name:
             return str(name)
     return "Unknown customer"
+
+
+def _user_name(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    name = value.get("displayName") or value.get("emailAddress") or value.get("name")
+    return str(name) if name else None
 
 
 def _sentry_error(

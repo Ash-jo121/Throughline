@@ -373,6 +373,14 @@ dd {
   margin-bottom: 0;
 }
 
+.fixList {
+  display: grid;
+  gap: 8px;
+  line-height: 1.5;
+  margin: 0;
+  padding-left: 20px;
+}
+
 .panel .chips,
 .panel .sourceLinks {
   margin-top: 12px;

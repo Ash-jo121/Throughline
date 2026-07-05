@@ -193,6 +193,39 @@ def mark_customer_data_forgotten(customer_name: str, data_ids: list[str]) -> Non
         )
 
 
+def delete_customer_briefs(customer_name: str) -> int:
+    _init_db()
+    with _connect() as connection:
+        rows = connection.execute("SELECT rowid, payload FROM briefs").fetchall()
+        delete_rowids: list[int] = []
+        update_rows: list[tuple[str, int]] = []
+        for row in rows:
+            try:
+                brief = IncidentBrief.model_validate_json(row["payload"])
+            except Exception:
+                continue
+            rowid = int(row["rowid"])
+            if brief.customer == customer_name:
+                delete_rowids.append(rowid)
+                continue
+            if customer_name in brief.also_affected:
+                brief.also_affected = [
+                    customer for customer in brief.also_affected if customer != customer_name
+                ]
+                update_rows.append((brief.model_dump_json(), rowid))
+
+        for payload, rowid in update_rows:
+            connection.execute("UPDATE briefs SET payload = ? WHERE rowid = ?", (payload, rowid))
+
+        if delete_rowids:
+            placeholders = ",".join("?" for _ in delete_rowids)
+            connection.execute(
+                f"DELETE FROM briefs WHERE rowid IN ({placeholders})",
+                delete_rowids,
+            )
+        return len(delete_rowids)
+
+
 def list_feedback() -> list[dict[str, Any]]:
     _init_db()
     with _connect() as connection:

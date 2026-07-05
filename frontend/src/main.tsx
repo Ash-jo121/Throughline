@@ -63,6 +63,23 @@ function App() {
     return () => window.clearInterval(interval);
   }, [view]);
 
+  useEffect(() => {
+    const onPopState = () => {
+      const pathBriefId = briefIdFromPath();
+      if (pathBriefId) {
+        void loadBrief(pathBriefId, "replace");
+        return;
+      }
+      setView("dashboard");
+      setBrief(null);
+      setFeedbackStatus("");
+      setActionStatus("");
+      void loadDashboard({ silent: true });
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  });
+
   async function loadDashboard(options: { silent?: boolean } = {}) {
     if (!options.silent) {
       setStatus("Loading incidents...");
@@ -81,7 +98,7 @@ function App() {
     }
   }
 
-  async function loadBrief(id: string) {
+  async function loadBrief(id: string, navigation: "push" | "replace" = "push") {
     const trimmed = id.trim();
     if (!trimmed) {
       setStatus("Enter a brief id.");
@@ -99,7 +116,7 @@ function App() {
     }
 
     const data = (await response.json()) as IncidentBrief;
-    openBrief(data);
+    openBrief(data, navigation);
     setStatus("Brief loaded.");
   }
 
@@ -136,12 +153,21 @@ function App() {
   async function sendFeedback(verdict: "up" | "down") {
     if (!brief) return;
     setFeedbackStatus("Saving feedback...");
-    const response = await fetch(`${apiBase}/briefs/${brief.brief_id}/feedback`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ verdict })
-    });
-    setFeedbackStatus(response.ok ? "Feedback saved." : "Feedback failed.");
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch(`${apiBase}/briefs/${brief.brief_id}/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ verdict }),
+        signal: controller.signal
+      });
+      setFeedbackStatus(response.ok ? "Feedback saved. Improve queued." : "Feedback failed.");
+    } catch {
+      setFeedbackStatus("Feedback timed out. Try again.");
+    } finally {
+      window.clearTimeout(timeout);
+    }
   }
 
   async function forgetCustomerFromDashboard(customer: string) {
@@ -161,9 +187,19 @@ function App() {
       setActionStatus("Delete request failed.");
       return;
     }
-    const data = (await response.json()) as { forgotten_count: number };
+    const data = (await response.json()) as { forgotten_count: number; local_brief_count?: number };
+    setBriefs((current) =>
+      current
+        .filter((item) => item.customer !== customer)
+        .map((item) => ({
+          ...item,
+          also_affected: item.also_affected.filter((affectedCustomer) => affectedCustomer !== customer)
+        }))
+    );
     setActionStatus(
-      `Forgot ${data.forgotten_count} customer-owned record${data.forgotten_count === 1 ? "" : "s"} for ${customer}.`
+      `Forgot ${data.forgotten_count} memory record${data.forgotten_count === 1 ? "" : "s"} and ${
+        data.local_brief_count ?? 0
+      } brief${data.local_brief_count === 1 ? "" : "s"} for ${customer}.`
     );
   }
 
@@ -190,10 +226,16 @@ function App() {
     }
   }
 
-  function openBrief(nextBrief: IncidentBrief) {
+  function openBrief(nextBrief: IncidentBrief, navigation: "push" | "replace" = "push") {
     setBrief(nextBrief);
     setView("brief");
-    window.history.replaceState(null, "", `/brief/${encodeURIComponent(nextBrief.brief_id)}`);
+    setActionStatus("");
+    const path = `/brief/${encodeURIComponent(nextBrief.brief_id)}`;
+    if (navigation === "replace") {
+      window.history.replaceState(null, "", path);
+    } else {
+      window.history.pushState(null, "", path);
+    }
   }
 
   function openDashboard() {
@@ -217,7 +259,7 @@ function App() {
         <div className="toolbarActions">
           {view === "brief" ? (
             <a className="backLink" href="/" onClick={handleBackToDashboard(openDashboard)}>
-              ← Back to incidents
+              &larr; Back to incidents
             </a>
           ) : null}
         </div>
@@ -423,15 +465,18 @@ function BriefDetail({
       <section className="bodyGrid">
         <BriefBlock title="Probable Cause" value={brief.probable_cause} />
         <RelationBlock brief={brief} />
-        <BriefBlock title="Recommended Fix" value={brief.recommended_fix} />
-        <SourcesBlock links={brief.source_links} />
+        <RecommendedFixBlock value={brief.recommended_fix} />
+        <SourcesBlock brief={brief} />
         <div className="panel">
           <h3>Also Affected</h3>
           <ChipList values={brief.also_affected} empty="None found" />
         </div>
         <div className="panel">
           <h3>Related Incidents</h3>
-          <ChipList values={brief.related} empty="No related incident ids" />
+          <ChipList
+            values={brief.matched_incident_id ? brief.related : []}
+            empty="No related incident ids"
+          />
         </div>
       </section>
 
@@ -468,7 +513,10 @@ function RelationBlock({ brief }: { brief: IncidentBrief }) {
   );
 }
 
-function SourcesBlock({ links }: { links: SourceLink[] }) {
+function SourcesBlock({ brief }: { brief: IncidentBrief }) {
+  const links = brief.source_links.filter(
+    (link) => link.kind !== "pull_request" || Boolean(brief.matched_incident_id)
+  );
   return (
     <div className="panel">
       <h3>Sources</h3>
@@ -482,6 +530,24 @@ function SourcesBlock({ links }: { links: SourceLink[] }) {
         </div>
       ) : (
         <p className="muted">No source links available</p>
+      )}
+    </div>
+  );
+}
+
+function RecommendedFixBlock({ value }: { value: string }) {
+  const steps = numberedSteps(value);
+  return (
+    <div className="panel">
+      <h3>Recommended Fix</h3>
+      {steps.length > 1 ? (
+        <ol className="fixList">
+          {steps.map((step) => (
+            <li key={step}>{step}</li>
+          ))}
+        </ol>
+      ) : (
+        <p>{value}</p>
       )}
     </div>
   );
@@ -520,16 +586,19 @@ function ChipList({ values, empty }: { values: string[]; empty: string }) {
 }
 
 function dashboardStats(briefs: IncidentBrief[]) {
+  const customers = distinctCustomers(briefs);
   return {
     total: briefs.length,
     fixes: briefs.filter((brief) => Boolean(brief.matched_incident_id)).length,
-    customers: new Set(briefs.map((brief) => brief.customer)).size,
+    customers: customers.length,
     highConfidence: briefs.filter((brief) => brief.confidence === "high").length
   };
 }
 
 function distinctCustomers(briefs: IncidentBrief[]) {
-  return Array.from(new Set(briefs.map((brief) => brief.customer))).sort((a, b) => a.localeCompare(b));
+  return Array.from(
+    new Set(briefs.flatMap((brief) => [brief.customer, ...brief.also_affected]).filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b));
 }
 
 function briefIdFromPath() {
@@ -567,6 +636,21 @@ function formatDate(value: string) {
     hour: "numeric",
     minute: "2-digit"
   }).format(date);
+}
+
+function numberedSteps(value: string) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  const matches = Array.from(normalized.matchAll(/(?:^|\s)(\d+)\.\s+/g));
+  if (matches.length < 2) return [];
+
+  return matches
+    .map((match, index) => {
+      const start = (match.index ?? 0) + match[0].length;
+      const next = matches[index + 1];
+      const end = next?.index ?? normalized.length;
+      return normalized.slice(start, end).trim();
+    })
+    .filter(Boolean);
 }
 
 createRoot(document.getElementById("root")!).render(

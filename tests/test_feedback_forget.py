@@ -7,9 +7,13 @@ from uuid import uuid4
 import pytest
 
 from throughline.memory import forget_customer_data, improve_from_feedback
+from throughline.synthesize import IncidentBrief
 from throughline.store import (
+    delete_customer_briefs,
+    get_all_briefs,
     list_customer_data_ids,
     mark_customer_data_forgotten,
+    persist_brief,
     persist_customer_data,
 )
 
@@ -104,3 +108,42 @@ def test_customer_data_is_not_returned_after_marking_forgotten(monkeypatch) -> N
     mark_customer_data_forgotten("Acme Corp", [data_id])
 
     assert list_customer_data_ids("Acme Corp") == []
+
+
+def test_delete_customer_briefs_preserves_other_primary_customers(monkeypatch) -> None:
+    db_path = Path(".throughline") / f"test_customer_briefs_{uuid4()}.db"
+    monkeypatch.setattr("throughline.store.BRIEF_DB_PATH", db_path)
+    acme = _brief("JIRA-1", "Acme Corp", also_affected=["Globex", "Initech"])
+    globex = _brief("JIRA-2", "Globex")
+
+    persist_brief(acme)
+    persist_brief(globex)
+
+    deleted = delete_customer_briefs("Globex")
+    remaining = get_all_briefs()
+
+    assert deleted == 1
+    assert [brief.customer for brief in remaining] == ["Acme Corp"]
+    assert remaining[0].also_affected == ["Initech"]
+
+
+def _brief(
+    incident_ref: str,
+    customer: str,
+    *,
+    also_affected: list[str] | None = None,
+) -> IncidentBrief:
+    return IncidentBrief(
+        incident_ref=incident_ref,
+        customer=customer,
+        component="PaymentService",
+        title=f"PaymentService escalation for {customer}",
+        probable_cause="Stripe webhook timeout behavior.",
+        matched_incident_id="INC-2024-11",
+        why_related="Shared PaymentService and StripeTimeout signals.",
+        recommended_fix="PR #1290 - Add exponential backoff.",
+        suggested_owner="Priya",
+        also_affected=also_affected or [],
+        confidence="high",
+        related=["INC-2024-11"],
+    )

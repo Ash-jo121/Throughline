@@ -17,6 +17,8 @@ configure_environment()
 
 logger = logging.getLogger(__name__)
 
+REFERENCE_PATTERN = r"\b(?:INC-\d{4}-\d{2}|[A-Z][A-Z0-9]+-\d+)\b"
+
 
 class SourceLink(BaseModel):
     label: str
@@ -72,6 +74,14 @@ async def _synthesize_with_llm(ticket: dict[str, Any], recall_output: str) -> In
                     "You write concise incident briefs from an incoming support ticket and "
                     "Cognee graph recall. Use only facts present in the ticket or recall. "
                     "Do not invent PR numbers, engineers, customers, or incident ids. "
+                    "Set matched_incident_id only when the recalled past incident or ticket "
+                    "shares the same component as the incoming ticket, or the same exact "
+                    "specific error entity. Do not match merely because two records contain "
+                    "generic words like timeout, error, failure, retry, or backoff. If no "
+                    "prior record shares the component or exact error entity, set "
+                    "matched_incident_id to null, related to [], confidence to low, and "
+                    "explain that no graph-safe match was found. Jira issue keys such as "
+                    "KAN-5 are valid matched_incident_id values when recall supports them. "
                     "Return a complete IncidentBrief. Use null for unknown optional fields."
                 ),
             },
@@ -101,8 +111,8 @@ def _synthesize_deterministic(ticket: dict[str, Any], recall_output: str) -> Inc
     """
 
     recall = recall_output or ""
-    matched_incident_id = _first_match(r"\bINC-\d{4}-\d{2}\b", recall)
-    related = sorted(set(re.findall(r"\bINC-\d{4}-\d{2}\b", recall)))
+    related = _reference_ids(recall, exclude=ticket["id"])
+    matched_incident_id = related[0] if related else None
     pr_ref = _first_match(r"\bPR\s*#?\s*\d+\b", recall)
     owner = _extract_owner(recall)
     also_affected = _extract_customer_list(recall)
@@ -132,6 +142,18 @@ def _first_match(pattern: str, text: str) -> str | None:
     if not match:
         return None
     return re.sub(r"\s+", " ", match.group(0)).replace("PR #", "PR #")
+
+
+def _reference_ids(text: str, *, exclude: str) -> list[str]:
+    seen: set[str] = set()
+    refs: list[str] = []
+    for match in re.finditer(REFERENCE_PATTERN, text):
+        ref = match.group(0).upper()
+        if ref == exclude.upper() or ref in seen:
+            continue
+        seen.add(ref)
+        refs.append(ref)
+    return refs
 
 
 def _extract_owner(text: str) -> str | None:

@@ -32,6 +32,7 @@ from throughline.resolve import resolve_customer
 from throughline.seed import PAST_INCIDENTS
 from throughline.service import build_incident_brief, remember_ticket_background
 from throughline.store import (
+    delete_customer_briefs,
     get_all_briefs,
     get_brief,
     get_brief_memory_refs,
@@ -107,6 +108,7 @@ class ForgetResponse(BaseModel):
     request_id: str
     status: str
     forgotten_count: int
+    local_brief_count: int = 0
 
 
 def _brief_path(brief_id: str) -> str:
@@ -307,13 +309,36 @@ def read_brief(brief_id: str) -> IncidentBrief:
     return brief
 
 
+async def _improve_feedback_background(
+    *,
+    session_id: str | None,
+    qa_id: str | None,
+    verdict: str,
+    note: str | None,
+) -> None:
+    try:
+        await improve_from_feedback(
+            session_id=session_id,
+            qa_id=qa_id,
+            verdict=verdict,
+            note=note,
+        )
+    except Exception:
+        logger.exception("Feedback improve failed for qa_id=%s", qa_id)
+
+
 @app.post("/briefs/{brief_id}/feedback")
-async def create_feedback(brief_id: str, feedback: FeedbackRequest) -> FeedbackResponse:
+async def create_feedback(
+    brief_id: str,
+    feedback: FeedbackRequest,
+    background_tasks: BackgroundTasks,
+) -> FeedbackResponse:
     if get_brief(brief_id) is None:
         raise HTTPException(status_code=404, detail="Brief not found")
     feedback_id = persist_feedback(brief_id, feedback.verdict, feedback.note)
     refs = get_brief_memory_refs(brief_id)
-    improve_result = await improve_from_feedback(
+    background_tasks.add_task(
+        _improve_feedback_background,
         session_id=refs.session_id if refs else None,
         qa_id=refs.qa_id if refs else None,
         verdict=feedback.verdict,
@@ -321,8 +346,8 @@ async def create_feedback(brief_id: str, feedback: FeedbackRequest) -> FeedbackR
     )
     return FeedbackResponse(
         feedback_id=feedback_id,
-        status="stored_and_improved",
-        improve_scope=str(improve_result["improve_scope"]),
+        status="stored_improve_queued",
+        improve_scope="session" if refs and refs.session_id and refs.qa_id else "dataset",
     )
 
 
@@ -331,12 +356,22 @@ async def request_customer_forget(name: str) -> ForgetResponse:
     customer_name = resolve_customer(name)
     request_id = persist_forget_request(customer_name)
     data_ids = list_customer_data_ids(customer_name)
+    logger.info("Forgetting customer %s with data_ids=%s", customer_name, data_ids)
     if data_ids:
         await forget_customer_data(data_ids)
         mark_customer_data_forgotten(customer_name, data_ids)
-    detail = f"forget completed for {len(data_ids)} customer-owned data item(s)"
+    local_brief_count = delete_customer_briefs(customer_name)
+    detail = (
+        f"forget completed for {len(data_ids)} customer-owned data item(s) and "
+        f"{local_brief_count} local brief(s)"
+    )
     mark_forget_request_done(request_id, detail)
-    return ForgetResponse(request_id=request_id, status="done", forgotten_count=len(data_ids))
+    return ForgetResponse(
+        request_id=request_id,
+        status="done",
+        forgotten_count=len(data_ids),
+        local_brief_count=local_brief_count,
+    )
 
 
 @app.post("/briefs/{brief_id}/share/slack")
