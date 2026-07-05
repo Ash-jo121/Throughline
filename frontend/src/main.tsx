@@ -1,12 +1,7 @@
 import { StrictMode, useEffect, useMemo, useState } from "react";
-import { Root, createRoot } from "react-dom/client";
+import type { MouseEvent } from "react";
+import { createRoot } from "react-dom/client";
 import "./styles.css";
-
-declare global {
-  interface Window {
-    __throughlineRoot?: Root;
-  }
-}
 
 type IncidentBrief = {
   brief_id: string;
@@ -22,640 +17,559 @@ type IncidentBrief = {
   also_affected: string[];
   confidence: "high" | "medium" | "low";
   related: string[];
+  source_links: SourceLink[];
   generated_at: string;
 };
 
-type IncidentForm = {
-  id: string;
-  raw_customer: string;
-  component: string;
-  summary: string;
-  errorClass: string;
-  service: string;
+type SourceLink = {
+  label: string;
+  url: string;
+  kind: "jira" | "pull_request" | "sentry" | "other";
 };
 
-type IntegrationState = {
-  jira?: { configured: boolean; auth: string };
-  slack?: { configured: boolean; auth: string };
+type ImportResponse = {
+  brief_id: string;
+  brief_path: string;
+  brief_url: string;
+  brief: IncidentBrief;
 };
 
 const apiBase = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
-const blankTicket: IncidentForm = {
-  id: "",
-  raw_customer: "",
-  component: "",
-  summary: "",
-  errorClass: "",
-  service: ""
-};
-
 function App() {
-  const initialBriefId = useMemo(() => {
-    const pathMatch = window.location.pathname.match(/^\/brief\/([^/]+)$/);
-    return pathMatch?.[1] ?? new URLSearchParams(window.location.search).get("brief_id") ?? "";
-  }, []);
-  const [briefId, setBriefId] = useState(initialBriefId);
+  const initialBriefId = useMemo(() => briefIdFromPath(), []);
+  const [view, setView] = useState<"dashboard" | "brief">(initialBriefId ? "brief" : "dashboard");
   const [brief, setBrief] = useState<IncidentBrief | null>(null);
-  const [form, setForm] = useState<IncidentForm>(blankTicket);
-  const [jiraKey, setJiraKey] = useState("");
-  const [integrations, setIntegrations] = useState<IntegrationState>({});
-  const [activity, setActivity] = useState("Ready for a live escalation.");
+  const [briefs, setBriefs] = useState<IncidentBrief[]>([]);
+  const [status, setStatus] = useState("Loading incidents...");
   const [feedbackStatus, setFeedbackStatus] = useState("");
-  const [forgetStatus, setForgetStatus] = useState("");
-  const [shareStatus, setShareStatus] = useState("");
-  const [memoryStatus, setMemoryStatus] = useState("Empty until you import or seed");
-  const [isImportingJira, setIsImportingJira] = useState(false);
-  const [isResettingMemory, setIsResettingMemory] = useState(false);
-  const [isSeedingMemory, setIsSeedingMemory] = useState(false);
+  const [actionStatus, setActionStatus] = useState("");
+  const [jiraKey, setJiraKey] = useState("ESC-1");
+  const [importing, setImporting] = useState(false);
 
   useEffect(() => {
-    void loadIntegrations();
     if (initialBriefId) {
       void loadBrief(initialBriefId);
+      return;
     }
+    void loadDashboard();
   }, [initialBriefId]);
 
-  async function loadIntegrations() {
-    try {
-      const response = await fetch(`${apiBase}/integrations`);
-      if (response.ok) {
-        setIntegrations((await response.json()) as IntegrationState);
-      }
-    } catch {
-      setIntegrations({});
+  useEffect(() => {
+    if (view !== "dashboard") return;
+    const interval = window.setInterval(() => {
+      void loadDashboard({ silent: true });
+    }, 5000);
+    return () => window.clearInterval(interval);
+  }, [view]);
+
+  async function loadDashboard(options: { silent?: boolean } = {}) {
+    if (!options.silent) {
+      setStatus("Loading incidents...");
+    }
+
+    const response = await fetch(`${apiBase}/briefs`);
+    if (!response.ok) {
+      setStatus("Could not load incidents. Check that the API is running.");
+      return;
+    }
+
+    const data = (await response.json()) as IncidentBrief[];
+    setBriefs(data);
+    if (!options.silent) {
+      setStatus(data.length ? "" : "No incident briefs yet.");
     }
   }
 
-  async function loadBrief(id = briefId) {
+  async function loadBrief(id: string) {
     const trimmed = id.trim();
     if (!trimmed) {
-      setActivity("Enter a brief id.");
+      setStatus("Enter a brief id.");
       return;
     }
 
-    setActivity("Loading saved brief...");
+    setStatus("Loading brief...");
     setFeedbackStatus("");
-    let response: Response;
-    try {
-      response = await fetch(`${apiBase}/briefs/${encodeURIComponent(trimmed)}`);
-    } catch {
-      setBrief(null);
-      setActivity("Could not reach the API on port 8000.");
-      return;
-    }
+    setActionStatus("");
+    const response = await fetch(`${apiBase}/briefs/${encodeURIComponent(trimmed)}`);
     if (!response.ok) {
       setBrief(null);
-      setActivity("Brief not found.");
+      setStatus("Brief not found.");
       return;
     }
 
     const data = (await response.json()) as IncidentBrief;
-    setBrief(data);
-    setBriefId(data.brief_id);
-    window.history.replaceState(null, "", `/brief/${encodeURIComponent(data.brief_id)}`);
-    setActivity("Brief loaded from SQLite.");
+    openBrief(data);
+    setStatus("Brief loaded.");
   }
 
-  async function createIncident() {
-    setActivity("Recalling Cognee graph memory...");
-    setFeedbackStatus("");
-    setForgetStatus("");
-    setShareStatus("");
-    let response: Response;
-    try {
-      response = await fetch(`${apiBase}/incidents`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id: form.id,
-          raw_customer: form.raw_customer,
-          component: form.component,
-          summary: form.summary,
-          sentry_error: form.errorClass
-            ? {
-                error_class: form.errorClass,
-                service: form.service || form.component
-              }
-            : null
-        })
-      });
-    } catch {
-      setActivity("Could not reach the API on port 8000.");
-      return;
-    }
-
-    if (!response.ok) {
-      setActivity(await failureText(response, "Incident creation failed."));
-      return;
-    }
-
-    const data = (await response.json()) as { brief_id: string; brief: IncidentBrief };
-    setBrief(data.brief);
-    setBriefId(data.brief_id);
-    window.history.replaceState(null, "", `/brief/${encodeURIComponent(data.brief_id)}`);
-    setActivity("recall() completed and a new brief was generated.");
-  }
-
-  async function importJiraIssue() {
+  async function importFromJira() {
     const key = jiraKey.trim();
     if (!key) {
-      setActivity("Enter a Jira issue key.");
+      setStatus("Enter a Jira issue key.");
       return;
     }
 
-    setActivity(`Importing ${key} from Jira Cloud...`);
-    setIsImportingJira(true);
-    const slowImportTimer = window.setTimeout(() => {
-      setActivity(
-        `Still importing ${key}. First run after reset can take about a minute while Cognee initializes memory.`
-      );
-    }, 8000);
+    setImporting(true);
+    setStatus(`Importing ${key} from Jira...`);
+    setActionStatus("");
+
     try {
-      const response = await fetch(`${apiBase}/integrations/jira/issues/${encodeURIComponent(key)}/brief`, {
-        method: "POST"
-      });
+      const response = await fetch(
+        `${apiBase}/integrations/jira/issues/${encodeURIComponent(key)}/brief`,
+        { method: "POST" }
+      );
       if (!response.ok) {
-        setActivity(await failureText(response, "Jira import failed."));
+        setStatus(await errorMessage(response));
         return;
       }
 
-      const data = (await response.json()) as {
-        issue_key: string;
-        ticket: {
-          id: string;
-          raw_customer: string;
-          component: string;
-          summary: string;
-          sentry_error?: { error_class?: string; service?: string };
-        };
-        brief_id: string;
-        brief: IncidentBrief;
-      };
-      setForm({
-        id: data.ticket.id,
-        raw_customer: data.ticket.raw_customer,
-        component: data.ticket.component,
-        summary: data.ticket.summary,
-        errorClass: data.ticket.sentry_error?.error_class ?? "",
-        service: data.ticket.sentry_error?.service ?? data.ticket.component
-      });
-      setBrief(data.brief);
-      setBriefId(data.brief_id);
-      setMemoryStatus(`Remembered ${data.issue_key} for future recall`);
-      window.history.replaceState(null, "", `/brief/${encodeURIComponent(data.brief_id)}`);
-      setActivity(`${data.issue_key} imported from Jira and converted into a brief.`);
-    } catch {
-      setActivity("Could not reach the API on port 8000.");
+      const data = (await response.json()) as ImportResponse;
+      setBriefs((current) => [data.brief, ...current.filter((item) => item.brief_id !== data.brief_id)]);
+      openBrief(data.brief);
+      setStatus(`Imported ${data.brief.incident_ref} from Jira.`);
     } finally {
-      window.clearTimeout(slowImportTimer);
-      setIsImportingJira(false);
+      setImporting(false);
     }
   }
 
   async function sendFeedback(verdict: "up" | "down") {
     if (!brief) return;
-    setFeedbackStatus("Running improve()...");
+    setFeedbackStatus("Saving feedback...");
     const response = await fetch(`${apiBase}/briefs/${brief.brief_id}/feedback`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ verdict })
     });
-    if (!response.ok) {
-      setFeedbackStatus("Feedback failed.");
-      return;
-    }
-    const result = (await response.json()) as { improve_scope: string };
-    setFeedbackStatus(`Feedback stored and improve() ran at ${result.improve_scope} scope.`);
+    setFeedbackStatus(response.ok ? "Feedback saved." : "Feedback failed.");
   }
 
-  async function forgetCustomer() {
-    if (!brief) return;
-    setForgetStatus("Running forget()...");
-    const response = await fetch(`${apiBase}/customers/${encodeURIComponent(brief.customer)}/forget`, {
+  async function forgetCustomerFromDashboard(customer: string) {
+    const confirmation = window.prompt(
+      `This permanently removes all ${customer} customer-owned data from Throughline memory. Type ${customer} to confirm.`
+    );
+    if (confirmation !== customer) {
+      setActionStatus("Forget canceled.");
+      return;
+    }
+
+    setActionStatus(`Forgetting ${customer}...`);
+    const response = await fetch(`${apiBase}/customers/${encodeURIComponent(customer)}/forget`, {
       method: "POST"
     });
     if (!response.ok) {
-      setForgetStatus("Forget failed.");
+      setActionStatus("Delete request failed.");
       return;
     }
     const data = (await response.json()) as { forgotten_count: number };
-    setForgetStatus(`forget() completed for ${data.forgotten_count} customer-owned record(s).`);
+    setActionStatus(
+      `Forgot ${data.forgotten_count} customer-owned record${data.forgotten_count === 1 ? "" : "s"} for ${customer}.`
+    );
   }
 
-  async function shareSlack() {
+  async function shareBrief() {
     if (!brief) return;
-    setShareStatus("Posting to Slack...");
-    const response = await fetch(`${apiBase}/briefs/${brief.brief_id}/share/slack`, {
-      method: "POST"
-    });
-    setShareStatus(response.ok ? "Shared to Slack." : await failureText(response, "Slack share failed."));
-  }
+    const briefUrl = currentBriefUrl(brief);
+    const shareData = {
+      title: brief.title,
+      text: `${brief.customer} | ${brief.component} | ${brief.recommended_fix}`,
+      url: briefUrl
+    };
 
-  async function copyLink() {
-    if (!brief) return;
-    const url = `${window.location.origin}/brief/${brief.brief_id}`;
-    await navigator.clipboard.writeText(url);
-    setShareStatus("Brief link copied.");
-  }
-
-  async function resetDemo() {
-    if (isResettingMemory || isSeedingMemory) return;
-    setIsResettingMemory(true);
-    setMemoryStatus("Resetting...");
-    setActivity("Resetting Cognee memory...");
-    const slowResetTimer = window.setTimeout(() => {
-      setActivity("Still resetting memory. Cognee is clearing graph/vector stores.");
-    }, 5000);
     try {
-      const response = await fetch(`${apiBase}/demo/reset`, { method: "POST" });
-      if (response.ok) {
-        setMemoryStatus("Memory reset");
-        setBrief(null);
-        setBriefId("");
-        setForm(blankTicket);
-        setActivity("Memory reset. Import a Jira issue to start fresh.");
-        window.history.replaceState(null, "", "/");
-      } else {
-        setMemoryStatus("Reset failed");
-        setActivity(await failureText(response, "Reset failed."));
+      if (navigator.share) {
+        await navigator.share(shareData);
+        setActionStatus("Share sheet opened.");
+        return;
       }
+
+      await navigator.clipboard.writeText(briefUrl);
+      setActionStatus("Brief link copied.");
     } catch {
-      setMemoryStatus("Reset failed");
-      setActivity("Could not reach the API on port 8000.");
-    } finally {
-      window.clearTimeout(slowResetTimer);
-      setIsResettingMemory(false);
+      setActionStatus("Share canceled.");
     }
   }
 
-  async function backfillDemo() {
-    if (isResettingMemory || isSeedingMemory) return;
-    setIsSeedingMemory(true);
-    setMemoryStatus("Running remember()...");
-    setActivity("Seeding sample memory with Cognee remember()...");
-    const slowSeedTimer = window.setTimeout(() => {
-      setActivity("Still seeding memory. First Cognee graph extraction can take about a minute.");
-    }, 8000);
-    try {
-      const response = await fetch(`${apiBase}/demo/backfill`, { method: "POST" });
-      if (response.ok) {
-        setMemoryStatus("remember() backfilled sample incidents");
-        setActivity("Sample memory seeded.");
-      } else {
-        setMemoryStatus("Backfill failed");
-        setActivity(await failureText(response, "Backfill failed."));
-      }
-    } catch {
-      setMemoryStatus("Backfill failed");
-      setActivity("Could not reach the API on port 8000.");
-    } finally {
-      window.clearTimeout(slowSeedTimer);
-      setIsSeedingMemory(false);
-    }
+  function openBrief(nextBrief: IncidentBrief) {
+    setBrief(nextBrief);
+    setView("brief");
+    window.history.replaceState(null, "", `/brief/${encodeURIComponent(nextBrief.brief_id)}`);
   }
 
-  const graphNodes = graphEvidence(form, brief);
+  function openDashboard() {
+    setView("dashboard");
+    setBrief(null);
+    setFeedbackStatus("");
+    setActionStatus("");
+    window.history.replaceState(null, "", "/");
+    void loadDashboard();
+  }
+
+  const briefUrl = brief ? currentBriefUrl(brief) : "";
 
   return (
-    <main className="appShell">
-      <aside className="sidebar" aria-label="Throughline navigation">
-        <div className="brandMark">T</div>
-        <nav>
-          <a href="#intake">In</a>
-          <a href="#memory">Kg</a>
-          <a href="#brief">Br</a>
-        </nav>
-      </aside>
-
-      <section className="workspace">
-        <header className="topbar">
-          <div>
-            <p className="eyebrow">Throughline command center</p>
-            <h1>Escalation memory, from signal to fix</h1>
-          </div>
-          <div className="integrationStrip">
-            <IntegrationBadge label="Jira" ready={Boolean(integrations.jira?.configured)} />
-            <IntegrationBadge label="Slack" ready={Boolean(integrations.slack?.configured)} />
-          </div>
-        </header>
-
-        <section className="statusBar" aria-live="polite">
-          <strong>Run state</strong>
-          <span>{activity}</span>
-        </section>
-
-        <section className="lifecycle">
-          <LifecycleStep label="remember()" status={memoryStatus} active />
-          <LifecycleStep label="recall()" status={brief ? "Matched prior fix" : "Awaiting incident"} active={Boolean(brief)} />
-          <LifecycleStep label="improve()" status={feedbackStatus || "Awaiting feedback"} active={feedbackStatus.includes("ran")} />
-          <LifecycleStep label="forget()" status={forgetStatus || "Awaiting delete request"} active={forgetStatus.includes("completed")} />
-        </section>
-
-        <section className="grid">
-          <section className="surface intake" id="intake">
-            <div className="sectionHeader">
-              <div>
-                <p className="eyebrow">Live signal</p>
-                <h2>Incident intake</h2>
-              </div>
-              <button type="button" className="ghostButton" onClick={() => setForm(blankTicket)}>
-                Clear form
-              </button>
-            </div>
-
-            <div className="demoControls">
-              <button
-                type="button"
-                className="ghostButton"
-                onClick={resetDemo}
-                disabled={isResettingMemory || isSeedingMemory}
-              >
-                {isResettingMemory ? "Resetting..." : "Reset memory"}
-              </button>
-              <button
-                type="button"
-                className="ghostButton"
-                onClick={backfillDemo}
-                disabled={isResettingMemory || isSeedingMemory}
-              >
-                {isSeedingMemory ? "Seeding..." : "Seed sample memory"}
-              </button>
-            </div>
-
-            <div className="jiraImport">
-              <label>
-                <span>Jira issue key</span>
-                <input value={jiraKey} onChange={(event) => setJiraKey(event.target.value)} />
-              </label>
-              <button type="button" onClick={importJiraIssue} disabled={isImportingJira}>
-                {isImportingJira ? "Importing..." : "Import Jira"}
-              </button>
-            </div>
-
-            <div className="formGrid">
-              <TextField label="Ticket" value={form.id} onChange={(id) => setForm({ ...form, id })} />
-              <TextField label="Customer" value={form.raw_customer} onChange={(raw_customer) => setForm({ ...form, raw_customer })} />
-              <TextField label="Component" value={form.component} onChange={(component) => setForm({ ...form, component })} />
-              <TextField label="Sentry error" value={form.errorClass} onChange={(errorClass) => setForm({ ...form, errorClass })} />
-            </div>
-            <label className="textAreaField">
-              <span>Escalation summary</span>
-              <textarea value={form.summary} onChange={(event) => setForm({ ...form, summary: event.target.value })} />
-            </label>
-            <button type="button" className="primaryButton" onClick={createIncident}>
-              Generate brief
-            </button>
-          </section>
-
-          <section className="surface" id="memory">
-            <div className="sectionHeader">
-              <div>
-                <p className="eyebrow">Source evidence</p>
-                <h2>Signals used by memory</h2>
-              </div>
-            </div>
-            <div className="sourceGrid">
-              <SourceCard title="Jira" value={form.id} detail={form.summary} state="live" />
-              <SourceCard title="Sentry" value={form.errorClass || "Not attached"} detail={form.service} state="parsed" />
-              <SourceCard title="GitHub" value={brief?.recommended_fix.match(/PR\s*#?\s*\d+/i)?.[0] ?? "Awaiting recall"} detail="Fix evidence from prior incident" state="memory" />
-              <SourceCard title="Slack" value={integrations.slack?.configured ? "Webhook ready" : "Webhook missing"} detail={shareStatus || "Share generated brief"} state="pending" />
-            </div>
-          </section>
-
-          <section className="surface graphPanel">
-            <div className="sectionHeader">
-              <div>
-                <p className="eyebrow">Cognee graph route</p>
-                <h2>Why this matched</h2>
-              </div>
-            </div>
-            <div className="graphPath">
-              {graphNodes.map((node, index) => (
-                <div className="graphNode" key={`${node.label}-${index}`}>
-                  <span>{node.type}</span>
-                  <strong>{node.label}</strong>
-                </div>
-              ))}
-            </div>
-            <p className="graphNote">
-              Graph extraction uses explicit entity index fields so repeated Jira signals can become shared graph
-              pivots instead of one-off text matches.
-            </p>
-          </section>
-
-          <section className="surface briefSurface" id="brief">
-            <div className="sectionHeader">
-              <div>
-                <p className="eyebrow">Shareable output</p>
-                <h2>Incident brief</h2>
-              </div>
-              <form
-                className="lookup"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void loadBrief();
-                }}
-              >
-                <input value={briefId} onChange={(event) => setBriefId(event.target.value)} placeholder="brief id" />
-                <button type="submit" className="ghostButton">
-                  Load
-                </button>
-              </form>
-            </div>
-
-            {brief ? (
-              <BriefView
-                brief={brief}
-                feedbackStatus={feedbackStatus}
-                forgetStatus={forgetStatus}
-                shareStatus={shareStatus}
-                onFeedback={sendFeedback}
-                onForget={forgetCustomer}
-                onCopy={copyLink}
-                onSlack={shareSlack}
-              />
-            ) : (
-              <div className="emptyState">
-                <strong>No brief loaded</strong>
-                <p>Import a Jira issue or enter your own escalation to see the full incident packet.</p>
-              </div>
-            )}
-          </section>
-        </section>
+    <main className="shell">
+      <section className="toolbar" aria-label="Primary navigation">
+        <div>
+          <p className="eyebrow">Throughline</p>
+          <h1>{view === "dashboard" ? "Incidents Dashboard" : "Incident Brief"}</h1>
+        </div>
+        <div className="toolbarActions">
+          {view === "brief" ? (
+            <a className="backLink" href="/" onClick={handleBackToDashboard(openDashboard)}>
+              ← Back to incidents
+            </a>
+          ) : null}
+        </div>
       </section>
+
+      {status ? <p className="status">{status}</p> : null}
+
+      {view === "dashboard" ? (
+        <Dashboard
+          briefs={briefs}
+          jiraKey={jiraKey}
+          importing={importing}
+          actionStatus={actionStatus}
+          onJiraKeyChange={setJiraKey}
+          onImport={() => void importFromJira()}
+          onOpenBrief={openBrief}
+          onForgetCustomer={(customer) => void forgetCustomerFromDashboard(customer)}
+        />
+      ) : null}
+
+      {view === "brief" && brief ? (
+        <BriefDetail
+          brief={brief}
+          briefUrl={briefUrl}
+          feedbackStatus={feedbackStatus}
+          actionStatus={actionStatus}
+          onFeedback={(verdict) => void sendFeedback(verdict)}
+          onShare={() => void shareBrief()}
+        />
+      ) : null}
     </main>
   );
 }
 
-function BriefView({
+function Dashboard({
+  briefs,
+  jiraKey,
+  importing,
+  actionStatus,
+  onJiraKeyChange,
+  onImport,
+  onOpenBrief,
+  onForgetCustomer
+}: {
+  briefs: IncidentBrief[];
+  jiraKey: string;
+  importing: boolean;
+  actionStatus: string;
+  onJiraKeyChange: (value: string) => void;
+  onImport: () => void;
+  onOpenBrief: (brief: IncidentBrief) => void;
+  onForgetCustomer: (customer: string) => void;
+}) {
+  const stats = dashboardStats(briefs);
+  const customers = distinctCustomers(briefs);
+
+  return (
+    <section className="dashboard" aria-label="Incidents dashboard">
+      <form
+        className="importBar"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onImport();
+        }}
+      >
+        <label>
+          <span>Jira issue key</span>
+          <input
+            value={jiraKey}
+            onChange={(event) => onJiraKeyChange(event.target.value)}
+            placeholder="ESC-1"
+            aria-label="Jira issue key"
+          />
+        </label>
+        <button type="submit" disabled={importing}>
+          {importing ? "Importing..." : "Import from Jira"}
+        </button>
+      </form>
+
+      <section className="statsGrid" aria-label="Memory stats">
+        <StatCard label="Incidents tracked" value={String(stats.total)} />
+        <StatCard label="Past fixes surfaced" value={`${stats.fixes} of ${stats.total}`} />
+        <StatCard label="Customers affected" value={String(stats.customers)} />
+        <StatCard label="High-confidence briefs" value={String(stats.highConfidence)} />
+      </section>
+
+      <section className="incidentList" aria-label="Incident briefs">
+        <header className="listHeader">
+          <h2>Incidents</h2>
+          <span>{briefs.length} total</span>
+        </header>
+        {briefs.length ? (
+          <div className="incidentTable" role="table" aria-label="Incident brief list">
+            <div className="incidentRow heading" role="row">
+              <span>Incident</span>
+              <span>Customer</span>
+              <span>Component</span>
+              <span>Past fix</span>
+              <span>Confidence</span>
+              <span>Generated</span>
+            </div>
+            {briefs.map((brief) => (
+              <button
+                className="incidentRow"
+                type="button"
+                role="row"
+                key={brief.brief_id}
+                onClick={() => onOpenBrief(brief)}
+              >
+                <span>
+                  <strong>{brief.incident_ref}</strong>
+                  <small>{brief.title}</small>
+                </span>
+                <span>{brief.customer}</span>
+                <span>{brief.component}</span>
+                <span>
+                  {brief.matched_incident_id ? (
+                    <span className="fixBadge">{brief.matched_incident_id}</span>
+                  ) : (
+                    <span className="muted">None</span>
+                  )}
+                </span>
+                <span>
+                  <span className={`badge ${brief.confidence}`}>{brief.confidence}</span>
+                </span>
+                <span>{formatDate(brief.generated_at)}</span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="emptyState">
+            <h2>No incident briefs yet</h2>
+            <p>Import a Jira issue key to generate the first brief.</p>
+          </div>
+        )}
+      </section>
+
+      <section className="customersSection" aria-label="Customer privacy controls">
+        <header className="listHeader">
+          <h2>Customers</h2>
+          <span>{customers.length} accounts</span>
+        </header>
+        <div className="customerGrid">
+          {customers.map((customer) => (
+            <div className="customerRow" key={customer}>
+              <span>{customer}</span>
+              <button className="secondary danger" type="button" onClick={() => onForgetCustomer(customer)}>
+                Forget customer
+              </button>
+            </div>
+          ))}
+        </div>
+        {actionStatus ? <p className="status inlineStatus">{actionStatus}</p> : null}
+      </section>
+    </section>
+  );
+}
+
+function BriefDetail({
   brief,
+  briefUrl,
   feedbackStatus,
-  forgetStatus,
-  shareStatus,
+  actionStatus,
   onFeedback,
-  onForget,
-  onCopy,
-  onSlack
+  onShare
 }: {
   brief: IncidentBrief;
+  briefUrl: string;
   feedbackStatus: string;
-  forgetStatus: string;
-  shareStatus: string;
-  onFeedback: (verdict: "up" | "down") => Promise<void>;
-  onForget: () => Promise<void>;
-  onCopy: () => Promise<void>;
-  onSlack: () => Promise<void>;
+  actionStatus: string;
+  onFeedback: (verdict: "up" | "down") => void;
+  onShare: () => void;
 }) {
   return (
     <article className="brief">
       <header className="briefHeader">
         <div>
           <p className="eyebrow">{brief.incident_ref}</p>
-          <h3>{brief.title}</h3>
+          <h2>{brief.title}</h2>
         </div>
-        <span className={`confidence ${brief.confidence}`}>{brief.confidence}</span>
+        <span className={`badge ${brief.confidence}`}>{brief.confidence}</span>
       </header>
 
       <dl className="facts">
-        <Fact label="Customer" value={brief.customer} />
-        <Fact label="Component" value={brief.component} />
-        <Fact label="Owner" value={brief.suggested_owner ?? "Unassigned"} />
-        <Fact label="Matched" value={brief.matched_incident_id ?? "No prior match"} />
+        <div>
+          <dt>Customer</dt>
+          <dd>{brief.customer}</dd>
+        </div>
+        <div>
+          <dt>Component</dt>
+          <dd>{brief.component}</dd>
+        </div>
+        <div>
+          <dt>Owner</dt>
+          <dd>{brief.suggested_owner ?? "Unassigned"}</dd>
+        </div>
+        <div>
+          <dt>Matched</dt>
+          <dd>{brief.matched_incident_id ?? "No prior match"}</dd>
+        </div>
       </dl>
 
-      <div className="briefBlocks">
-        <BriefBlock title="Probable cause" value={brief.probable_cause} />
-        <BriefBlock title="Why related" value={brief.why_related} />
-        <BriefBlock title="Recommended fix" value={brief.recommended_fix} />
-        <div className="miniPanel">
-          <h4>Related memory</h4>
-          <ChipList values={[...brief.related, ...brief.also_affected]} empty="No related memory found" />
+      <section className="bodyGrid">
+        <BriefBlock title="Probable Cause" value={brief.probable_cause} />
+        <RelationBlock brief={brief} />
+        <BriefBlock title="Recommended Fix" value={brief.recommended_fix} />
+        <SourcesBlock links={brief.source_links} />
+        <div className="panel">
+          <h3>Also Affected</h3>
+          <ChipList values={brief.also_affected} empty="None found" />
         </div>
-      </div>
+        <div className="panel">
+          <h3>Related Incidents</h3>
+          <ChipList values={brief.related} empty="No related incident ids" />
+        </div>
+      </section>
 
-      <footer className="actions">
-        <button type="button" onClick={() => void onFeedback("up")}>
+      <footer className="feedback">
+        <button type="button" onClick={() => onFeedback("up")} aria-label="Mark helpful">
           Helpful
         </button>
-        <button type="button" className="ghostButton" onClick={() => void onFeedback("down")}>
-          Not useful
+        <button type="button" onClick={() => onFeedback("down")} aria-label="Mark unhelpful">
+          Not helpful
         </button>
-        <button type="button" className="ghostButton" onClick={() => void onCopy()}>
-          Copy link
-        </button>
-        <button type="button" className="ghostButton" onClick={() => void onSlack()}>
-          Share Slack
-        </button>
-        <button type="button" className="dangerButton" onClick={() => void onForget()}>
-          Forget customer
-        </button>
-      </footer>
-      <div className="actionStatus">
         <span>{feedbackStatus}</span>
-        <span>{shareStatus}</span>
-        <span>{forgetStatus}</span>
-      </div>
+      </footer>
+
+      <section className="shareBar" aria-label="Share and privacy actions">
+        <input value={briefUrl} readOnly aria-label="Shareable brief link" />
+        <button type="button" onClick={onShare}>
+          Share link
+        </button>
+        <span>{actionStatus}</span>
+      </section>
     </article>
   );
 }
 
-function IntegrationBadge({ label, ready }: { label: string; ready: boolean }) {
+function RelationBlock({ brief }: { brief: IncidentBrief }) {
+  const sentry = brief.source_links.find((link) => link.kind === "sentry")?.label.replace("Sentry ", "");
+  const signals = [brief.component, sentry].filter(Boolean) as string[];
   return (
-    <div className="systemState">
-      <span className={ready ? "stateDot ready" : "stateDot"} />
-      <div>
-        <strong>{label}</strong>
-        <small>{ready ? "Connected" : "Env missing"}</small>
-      </div>
+    <div className="panel">
+      <h3>Why Related</h3>
+      <p>{brief.why_related}</p>
+      <ChipList values={signals} empty="No shared graph signals" />
     </div>
   );
 }
 
-function LifecycleStep({ label, status, active }: { label: string; status: string; active: boolean }) {
+function SourcesBlock({ links }: { links: SourceLink[] }) {
   return (
-    <div className={active ? "lifeStep active" : "lifeStep"}>
-      <strong>{label}</strong>
-      <span>{status}</span>
+    <div className="panel">
+      <h3>Sources</h3>
+      {links.length ? (
+        <div className="sourceLinks">
+          {links.map((link) => (
+            <a key={`${link.kind}-${link.url}`} href={link.url} target="_blank" rel="noreferrer">
+              {link.label}
+            </a>
+          ))}
+        </div>
+      ) : (
+        <p className="muted">No source links available</p>
+      )}
     </div>
   );
 }
 
-function TextField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+function StatCard({ label, value }: { label: string; value: string }) {
   return (
-    <label>
+    <div className="statCard">
       <span>{label}</span>
-      <input value={value} onChange={(event) => onChange(event.target.value)} />
-    </label>
-  );
-}
-
-function Fact({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <dt>{label}</dt>
-      <dd>{value}</dd>
-    </div>
-  );
-}
-
-function SourceCard({ title, value, detail, state }: { title: string; value: string; detail: string; state: "live" | "parsed" | "memory" | "pending" }) {
-  return (
-    <article className="sourceCard">
-      <span className={`sourceState ${state}`}>{state}</span>
-      <h3>{title}</h3>
       <strong>{value}</strong>
-      <p>{detail}</p>
-    </article>
+    </div>
   );
 }
 
 function BriefBlock({ title, value }: { title: string; value: string }) {
   return (
-    <div className="miniPanel">
-      <h4>{title}</h4>
+    <div className="panel">
+      <h3>{title}</h3>
       <p>{value}</p>
     </div>
   );
 }
 
 function ChipList({ values, empty }: { values: string[]; empty: string }) {
-  const unique = [...new Set(values)].filter(Boolean);
-  if (!unique.length) {
+  if (!values.length) {
     return <p className="muted">{empty}</p>;
   }
 
   return (
     <div className="chips">
-      {unique.map((value) => (
+      {values.map((value) => (
         <span key={value}>{value}</span>
       ))}
     </div>
   );
 }
 
-function graphEvidence(form: IncidentForm, brief: IncidentBrief | null) {
-  return [
-    { type: "Ticket", label: form.id },
-    { type: "Error", label: form.errorClass || "Optional error signal" },
-    { type: "Component", label: brief?.component ?? (form.component || "Unknown component") },
-    { type: "Incident", label: brief?.matched_incident_id ?? "Awaiting recall" },
-    { type: "Fix", label: brief?.recommended_fix.match(/PR\s*#?\s*\d+/i)?.[0] ?? "Awaiting prior fix" }
-  ];
+function dashboardStats(briefs: IncidentBrief[]) {
+  return {
+    total: briefs.length,
+    fixes: briefs.filter((brief) => Boolean(brief.matched_incident_id)).length,
+    customers: new Set(briefs.map((brief) => brief.customer)).size,
+    highConfidence: briefs.filter((brief) => brief.confidence === "high").length
+  };
 }
 
-async function failureText(response: Response, fallback: string) {
+function distinctCustomers(briefs: IncidentBrief[]) {
+  return Array.from(new Set(briefs.map((brief) => brief.customer))).sort((a, b) => a.localeCompare(b));
+}
+
+function briefIdFromPath() {
+  const pathMatch = window.location.pathname.match(/^\/brief\/([^/]+)$/);
+  return pathMatch?.[1] ?? new URLSearchParams(window.location.search).get("brief_id") ?? "";
+}
+
+function handleBackToDashboard(openDashboard: () => void) {
+  return (event: MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    openDashboard();
+  };
+}
+
+function currentBriefUrl(brief: IncidentBrief) {
+  return `${window.location.origin}/brief/${encodeURIComponent(brief.brief_id)}`;
+}
+
+async function errorMessage(response: Response) {
   try {
-    const body = (await response.json()) as { detail?: string };
-    return body.detail ?? fallback;
+    const payload = (await response.json()) as { detail?: string };
+    if (payload.detail) return payload.detail;
   } catch {
-    return fallback;
+    // Fall through to a status-based message.
   }
+  return `Import failed with HTTP ${response.status}.`;
 }
 
-const rootElement = document.getElementById("root")!;
-window.__throughlineRoot = window.__throughlineRoot ?? createRoot(rootElement);
-window.__throughlineRoot.render(
+function formatDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value || "Unknown";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(date);
+}
+
+createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <App />
   </StrictMode>

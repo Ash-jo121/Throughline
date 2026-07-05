@@ -2,21 +2,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from typing import Literal
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request as UrlRequest
+from urllib.request import urlopen
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from throughline.jira import (
     JiraConfigurationError,
+    JiraIssueNotFound,
     JiraRequestError,
     fetch_jira_issue,
     jira_configured,
     jira_issue_to_ticket,
+    jira_missing_env_vars,
 )
 from throughline.memory import (
     forget_customer_data,
@@ -28,8 +32,10 @@ from throughline.resolve import resolve_customer
 from throughline.seed import PAST_INCIDENTS
 from throughline.service import build_incident_brief, remember_ticket_background
 from throughline.store import (
+    get_all_briefs,
     get_brief,
     get_brief_memory_refs,
+    get_latest_brief,
     list_customer_data_ids,
     mark_customer_data_forgotten,
     mark_forget_request_done,
@@ -40,10 +46,16 @@ from throughline.synthesize import IncidentBrief
 
 
 app = FastAPI(title="Throughline", version="0.2.0")
+logger = logging.getLogger(__name__)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -61,6 +73,8 @@ class IncidentRequest(BaseModel):
 
 class IncidentResponse(BaseModel):
     brief_id: str
+    brief_path: str
+    brief_url: str
     brief: IncidentBrief
 
 
@@ -68,7 +82,14 @@ class JiraImportResponse(BaseModel):
     issue_key: str
     ticket: dict
     brief_id: str
+    brief_path: str
+    brief_url: str
     brief: IncidentBrief
+
+
+class WebhookAcceptedResponse(BaseModel):
+    status: str
+    issue_key: str | None = None
 
 
 class FeedbackRequest(BaseModel):
@@ -86,6 +107,76 @@ class ForgetResponse(BaseModel):
     request_id: str
     status: str
     forgotten_count: int
+
+
+def _brief_path(brief_id: str) -> str:
+    return f"/brief/{brief_id}"
+
+
+def _brief_url(brief_id: str) -> str:
+    public_base = os.getenv("THROUGHLINE_PUBLIC_BASE_URL", "http://localhost:5173").rstrip("/")
+    return f"{public_base}{_brief_path(brief_id)}"
+
+
+def _incident_response(brief: IncidentBrief) -> IncidentResponse:
+    return IncidentResponse(
+        brief_id=brief.brief_id,
+        brief_path=_brief_path(brief.brief_id),
+        brief_url=_brief_url(brief.brief_id),
+        brief=brief,
+    )
+
+
+def _jira_import_response(issue_key: str, ticket: dict, brief: IncidentBrief) -> JiraImportResponse:
+    return JiraImportResponse(
+        issue_key=issue_key,
+        ticket=ticket,
+        brief_id=brief.brief_id,
+        brief_path=_brief_path(brief.brief_id),
+        brief_url=_brief_url(brief.brief_id),
+        brief=brief,
+    )
+
+
+async def _brief_from_existing_ticket(
+    incident: IncidentRequest,
+    background_tasks: BackgroundTasks,
+) -> IncidentResponse:
+    ticket = incident.model_dump()
+    brief = await build_incident_brief(ticket)
+    background_tasks.add_task(remember_ticket_background, ticket)
+    return _incident_response(brief)
+
+
+async def _brief_from_jira_issue_key(
+    issue_key: str,
+    background_tasks: BackgroundTasks,
+) -> JiraImportResponse:
+    try:
+        issue = fetch_jira_issue(issue_key)
+    except JiraConfigurationError as error:
+        missing = ", ".join(jira_missing_env_vars())
+        detail = f"{error}. Set {missing}." if missing else str(error)
+        raise HTTPException(status_code=400, detail=detail) from error
+    except JiraIssueNotFound as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except JiraRequestError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+    ticket = jira_issue_to_ticket(issue)
+    brief = await build_incident_brief(ticket)
+    background_tasks.add_task(remember_ticket_background, ticket)
+    return _jira_import_response(str(issue.get("key") or issue_key), ticket, brief)
+
+
+async def _generate_jira_brief_background(issue_key: str) -> None:
+    try:
+        issue = fetch_jira_issue(issue_key)
+        ticket = jira_issue_to_ticket(issue)
+        await build_incident_brief(ticket)
+        await remember_ticket_background(ticket)
+    except Exception:
+        logger.exception("Jira webhook brief generation failed for issue %s", issue_key)
 
 
 @app.get("/health")
@@ -108,18 +199,15 @@ def integrations() -> dict[str, dict[str, bool | str]]:
 
 
 @app.post(
-    "/incidents",
+    "/integrations/jira/issues",
     response_model=IncidentResponse,
-    summary="Create an incident brief from an incoming ticket",
+    summary="Generate an incident brief from an existing Jira issue",
 )
-async def create_incident_brief(
+async def receive_jira_issue(
     incident: IncidentRequest,
     background_tasks: BackgroundTasks,
 ) -> IncidentResponse:
-    ticket = incident.model_dump()
-    brief = await build_incident_brief(ticket)
-    background_tasks.add_task(remember_ticket_background, ticket)
-    return IncidentResponse(brief_id=brief.brief_id, brief=brief)
+    return await _brief_from_existing_ticket(incident, background_tasks)
 
 
 @app.get("/integrations/jira/issues/{issue_key}")
@@ -128,31 +216,87 @@ def read_jira_issue(issue_key: str) -> dict:
         return fetch_jira_issue(issue_key)
     except JiraConfigurationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    except JiraIssueNotFound as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
     except JiraRequestError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
 
-@app.post("/integrations/jira/issues/{issue_key}/brief", response_model=JiraImportResponse)
-async def create_brief_from_jira(
+@app.post(
+    "/integrations/jira/issues/{issue_key}/brief",
+    response_model=JiraImportResponse,
+    summary="Import a Jira issue by key and generate an incident brief",
+)
+async def import_jira_issue_by_key(
     issue_key: str,
     background_tasks: BackgroundTasks,
 ) -> JiraImportResponse:
-    try:
-        issue = fetch_jira_issue(issue_key)
-    except JiraConfigurationError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    except JiraRequestError as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
+    return await _brief_from_jira_issue_key(issue_key, background_tasks)
 
-    ticket = jira_issue_to_ticket(issue)
-    brief = await build_incident_brief(ticket)
-    background_tasks.add_task(remember_ticket_background, ticket)
-    return JiraImportResponse(
-        issue_key=str(issue.get("key") or issue_key),
-        ticket=ticket,
-        brief_id=brief.brief_id,
-        brief=brief,
-    )
+
+@app.post(
+    "/integrations/jira/webhook",
+    response_model=WebhookAcceptedResponse,
+    summary="Receive Jira issue-created webhooks and generate briefs asynchronously",
+)
+async def receive_jira_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    secret: str | None = None,
+    x_jira_webhook_secret: str | None = Header(default=None),
+) -> WebhookAcceptedResponse:
+    configured_secret = os.getenv("JIRA_WEBHOOK_SECRET")
+    if configured_secret and configured_secret not in {secret, x_jira_webhook_secret}:
+        raise HTTPException(status_code=401, detail="Invalid Jira webhook secret.")
+
+    try:
+        payload = await request.json()
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="Webhook body must be valid JSON.") from error
+
+    event_name = payload.get("webhookEvent")
+    if event_name != "jira:issue_created":
+        return WebhookAcceptedResponse(status="ignored")
+
+    issue_key = ((payload.get("issue") or {}).get("key") or "").strip()
+    if not issue_key:
+        raise HTTPException(status_code=400, detail="Jira webhook payload is missing issue.key.")
+
+    if not jira_configured():
+        logger.warning(
+            "Accepted Jira webhook for %s, but Jira REST is not configured. Missing: %s",
+            issue_key,
+            ", ".join(jira_missing_env_vars()),
+        )
+
+    background_tasks.add_task(_generate_jira_brief_background, issue_key)
+    return WebhookAcceptedResponse(status="accepted", issue_key=issue_key)
+
+
+@app.post(
+    "/incidents",
+    response_model=IncidentResponse,
+    summary="Generate an incident brief from an incoming ticket",
+    include_in_schema=False,
+)
+async def create_incident_brief(
+    incident: IncidentRequest,
+    background_tasks: BackgroundTasks,
+) -> IncidentResponse:
+    return await _brief_from_existing_ticket(incident, background_tasks)
+
+
+@app.get("/briefs/latest", response_model=IncidentBrief)
+def read_latest_brief() -> IncidentBrief:
+    brief = get_latest_brief()
+    if brief is None:
+        raise HTTPException(status_code=404, detail="Brief not found")
+    return brief
+
+
+@app.get("/briefs", response_model=list[IncidentBrief])
+def list_briefs() -> list[IncidentBrief]:
+    return get_all_briefs()
 
 
 @app.get("/briefs/{brief_id}", response_model=IncidentBrief)
@@ -213,7 +357,7 @@ def share_brief_to_slack(brief_id: str) -> dict[str, str]:
             f"Recommended fix: {brief.recommended_fix}"
         )
     }
-    request = Request(
+    request = UrlRequest(
         webhook_url,
         data=json.dumps(message).encode("utf-8"),
         headers={"Content-Type": "application/json"},

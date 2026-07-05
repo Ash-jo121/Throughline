@@ -136,6 +136,7 @@ async def remember_incident(record: dict[str, Any]) -> list[str]:
     """Write one incident/ticket record to the Cognee graph."""
 
     require_llm_key()
+    before_data_ids = await _current_dataset_data_ids()
     result = await cognee.remember(
         serialize_incident(record),
         dataset_name=DATASET_NAME,
@@ -144,7 +145,7 @@ async def remember_incident(record: dict[str, Any]) -> list[str]:
         node_set=["throughline", "incidents", record["component"]],
         self_improvement=True,
     )
-    return _data_ids(result)
+    return await _new_data_ids(before_data_ids, result)
 
 
 async def remember_ticket(record: dict[str, Any]) -> list[str]:
@@ -152,6 +153,7 @@ async def remember_ticket(record: dict[str, Any]) -> list[str]:
 
     require_llm_key()
     normalized = normalize_ticket(record)
+    before_data_ids = await _current_dataset_data_ids()
     result = await cognee.remember(
         serialize_ticket(normalized),
         dataset_name=DATASET_NAME,
@@ -160,7 +162,7 @@ async def remember_ticket(record: dict[str, Any]) -> list[str]:
         node_set=["throughline", "tickets", normalized["component"]],
         self_improvement=True,
     )
-    return _data_ids(result)
+    return await _new_data_ids(before_data_ids, result)
 
 
 async def recall_related(
@@ -305,6 +307,54 @@ def _result_text(result: Any) -> str:
 def _data_ids(result: Any) -> list[str]:
     items = getattr(result, "items", []) or []
     return [str(item["id"]) for item in items if isinstance(item, dict) and item.get("id")]
+
+
+async def _new_data_ids(before_data_ids: set[str], result: Any) -> list[str]:
+    after_data_ids = await _current_dataset_data_ids()
+    new_data_ids = sorted(after_data_ids - before_data_ids)
+    if new_data_ids:
+        return new_data_ids
+
+    return _data_ids(result)
+
+
+async def _current_dataset_data_ids() -> set[str]:
+    datasets_api = getattr(cognee, "datasets", None)
+    list_datasets = getattr(datasets_api, "list_datasets", None)
+    list_data = getattr(datasets_api, "list_data", None)
+    if list_datasets is None or list_data is None:
+        return set()
+
+    try:
+        dataset_id = await _dataset_id()
+        if dataset_id is None:
+            return set()
+
+        rows = await list_data(dataset_id)
+    except Exception:
+        return set()
+
+    return {_entity_id(row) for row in rows if _entity_id(row)}
+
+
+async def _dataset_id() -> Any | None:
+    datasets = await cognee.datasets.list_datasets()
+    for dataset in datasets:
+        name = _entity_value(dataset, "name") or _entity_value(dataset, "dataset_name")
+        if name == DATASET_NAME:
+            return _entity_value(dataset, "id")
+    return None
+
+
+def _entity_id(value: Any) -> str | None:
+    entity_id = _entity_value(value, "id")
+    return str(entity_id) if entity_id else None
+
+
+def _entity_value(value: Any, key: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(key)
+    return getattr(value, key, None)
 
 
 async def _latest_qa_id(session_id: str | None) -> str | None:

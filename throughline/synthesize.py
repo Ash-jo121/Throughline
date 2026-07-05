@@ -18,6 +18,12 @@ configure_environment()
 logger = logging.getLogger(__name__)
 
 
+class SourceLink(BaseModel):
+    label: str
+    url: str
+    kind: Literal["jira", "pull_request", "sentry", "other"] = "other"
+
+
 class IncidentBrief(BaseModel):
     brief_id: str = Field(default_factory=lambda: str(uuid4()))
     incident_ref: str
@@ -32,6 +38,7 @@ class IncidentBrief(BaseModel):
     also_affected: list[str] = Field(default_factory=list)
     confidence: Literal["high", "medium", "low"]
     related: list[str] = Field(default_factory=list)
+    source_links: list[SourceLink] = Field(default_factory=list)
     generated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 

@@ -26,12 +26,22 @@ def persist_brief(
     _init_db()
     created_at = datetime.now(UTC).isoformat()
     with _connect() as connection:
+        _delete_existing_incident_ref(connection, brief.incident_ref)
         connection.execute(
             """
-            INSERT OR REPLACE INTO briefs(brief_id, payload, created_at, session_id, qa_id)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO briefs(
+                brief_id, incident_ref, payload, created_at, session_id, qa_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (brief.brief_id, brief.model_dump_json(), created_at, session_id, qa_id),
+            (
+                brief.brief_id,
+                brief.incident_ref,
+                brief.model_dump_json(),
+                created_at,
+                session_id,
+                qa_id,
+            ),
         )
     return brief.brief_id
 
@@ -46,6 +56,41 @@ def get_brief(brief_id: str) -> IncidentBrief | None:
     if row is None:
         return None
     return IncidentBrief.model_validate_json(row["payload"])
+
+
+def get_latest_brief() -> IncidentBrief | None:
+    _init_db()
+    with _connect() as connection:
+        row = connection.execute(
+            """
+            SELECT payload FROM briefs
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+        ).fetchone()
+    if row is None:
+        return None
+    return IncidentBrief.model_validate_json(row["payload"])
+
+
+def get_all_briefs() -> list[IncidentBrief]:
+    _init_db()
+    with _connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT payload FROM briefs
+            ORDER BY created_at DESC
+            """,
+        ).fetchall()
+    briefs = [IncidentBrief.model_validate_json(row["payload"]) for row in rows]
+    seen: set[str] = set()
+    deduped: list[IncidentBrief] = []
+    for brief in briefs:
+        if brief.incident_ref in seen:
+            continue
+        seen.add(brief.incident_ref)
+        deduped.append(brief)
+    return deduped
 
 
 def get_brief_memory_refs(brief_id: str) -> BriefMemoryRefs | None:
@@ -183,6 +228,7 @@ def _init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS briefs (
                 brief_id TEXT PRIMARY KEY,
+                incident_ref TEXT,
                 payload TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 session_id TEXT,
@@ -220,6 +266,7 @@ def _init_db() -> None:
             connection,
             "briefs",
             {
+                "incident_ref": "TEXT",
                 "session_id": "TEXT",
                 "qa_id": "TEXT",
             },
@@ -246,3 +293,24 @@ def _ensure_columns(
     for name, definition in columns.items():
         if name not in existing:
             connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {name} {definition}")
+
+
+def _delete_existing_incident_ref(connection: sqlite3.Connection, incident_ref: str) -> None:
+    rows = connection.execute("SELECT rowid, incident_ref, payload FROM briefs").fetchall()
+    rowids: list[int] = []
+    for row in rows:
+        if row["incident_ref"] == incident_ref:
+            rowids.append(int(row["rowid"]))
+            continue
+        try:
+            brief = IncidentBrief.model_validate_json(row["payload"])
+        except Exception:
+            continue
+        if brief.incident_ref == incident_ref:
+            rowids.append(int(row["rowid"]))
+
+    if not rowids:
+        return
+
+    placeholders = ",".join("?" for _ in rowids)
+    connection.execute(f"DELETE FROM briefs WHERE rowid IN ({placeholders})", rowids)

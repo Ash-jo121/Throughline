@@ -14,21 +14,6 @@ new StripeTimeout ticket -> PaymentService <- INC-2024-11 -> PR #1290
 A lexical search can chase the wrong generic outage. Throughline uses Cognee's graph to pivot
 through shared components, Sentry errors, customers, incidents, pull requests, and engineers.
 
-## What The Demo Shows
-
-Throughline is not a mock ticket viewer. The winning demo path is:
-
-1. Backfill real Cognee memory with historical incidents.
-2. Import or create a new escalation from Jira-shaped ticket data.
-3. Recall the closest prior incident through Cognee's graph, not keyword search.
-4. Generate an operator-ready brief with source evidence, graph path, and recommended fix.
-5. Improve future recall from thumbs-up/down feedback.
-6. Forget customer-owned ticket memory while preserving shared incident knowledge.
-7. Share the brief to Slack for escalation handoff.
-
-The app can run with demo data only, but the integration surface is production-shaped: Jira Cloud
-REST import, Slack incoming webhook share, persisted feedback, and customer data deletion records.
-
 ## Architecture
 
 - Seed incidents and incoming tickets are serialized into extraction-friendly text.
@@ -37,10 +22,11 @@ REST import, Slack incoming webhook share, persisted feedback, and customer data
 - The synthesizer turns graph recall into a structured `IncidentBrief`.
 - SQLite stores brief payloads, recall `session_id`/`qa_id`, feedback, forget requests, and
   customer-owned Cognee `data_id`s.
-- FastAPI exposes incident creation, Jira import, brief retrieval, Slack share, feedback/improve,
-  demo memory controls, and customer forget routes.
-- React renders a command-center UI with the full memory lifecycle, integration health, source
-  evidence, graph path, brief actions, and demo controls.
+- FastAPI exposes Jira import/webhook, brief retrieval, Slack share, feedback/improve, demo memory
+  controls, and customer forget routes.
+- React renders `/` as an incidents dashboard with Jira import, memory stats, customer privacy
+  controls, and a clickable incident list. `/brief/:id` remains the shareable detail page with
+  source evidence, feedback, and native share/copy-link controls.
 
 ## Cognee Lifecycle Story
 
@@ -76,6 +62,7 @@ Optional real integrations:
 JIRA_SITE_URL="https://your-domain.atlassian.net"
 JIRA_EMAIL="you@example.com"
 JIRA_API_TOKEN="..."
+JIRA_WEBHOOK_SECRET=""
 SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
 ```
 
@@ -96,18 +83,25 @@ Run the make-or-break graph probe:
 .\.venv\Scripts\python.exe scripts\probe_graph.py
 ```
 
+Run the Day 3 lifecycle demo with visible before/after recall pairs:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\demo_lifecycle.py
+```
+
+Reset to a clean dashboard state for recording:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\reset_demo.py
+```
+
+This clears local brief state and Cognee memory, backfills the seed incidents, then generates one
+matched brief and one low/no-match brief so the dashboard stats look believable.
+
 Start the API:
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8000
-```
-
-Create a brief:
-
-```powershell
-Invoke-RestMethod -Method Post http://localhost:8000/incidents `
-  -ContentType "application/json" `
-  -Body '{"id":"JIRA-4821","raw_customer":"acme_corp","component":"PaymentService","summary":"Payments failing intermittently at checkout.","date":"2025-07-05","sentry_error":{"error_class":"StripeTimeout","service":"billing-worker"}}'
+.\.venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 Start the frontend:
@@ -118,14 +112,24 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173/brief/<brief_id>`.
+Open `http://localhost:5173` for the incidents dashboard, or
+`http://localhost:5173/brief/<brief_id>` for a shareable brief detail.
+
+Reliable Jira fallback: import an existing issue by key and generate a brief:
+
+```powershell
+Invoke-RestMethod -Method Post http://localhost:8000/integrations/jira/issues/ESC-1/brief
+```
 
 Useful API routes:
 
-- `POST /incidents`: recall -> synthesize -> persist, then remember ticket in the background.
 - `GET /integrations`: report Jira and Slack readiness.
 - `GET /integrations/jira/issues/{issue_key}`: fetch a real Jira Cloud issue.
 - `POST /integrations/jira/issues/{issue_key}/brief`: import Jira -> recall -> synthesize.
+- `POST /integrations/jira/webhook`: accept Jira issue-created webhooks quickly, then generate the
+  brief in the background.
+- `GET /briefs`: list all generated briefs, newest first, for the dashboard.
+- `GET /briefs/latest`: load the newest generated brief after an async webhook run.
 - `GET /briefs/{brief_id}`: load a shareable brief.
 - `POST /briefs/{brief_id}/share/slack`: send the current brief to Slack.
 - `POST /briefs/{brief_id}/feedback`: store feedback, submit `FeedbackEntry`, run `improve()`.
@@ -133,19 +137,43 @@ Useful API routes:
 - `POST /demo/reset`: clear Cognee memory for a clean demo.
 - `POST /demo/backfill`: reset and load the historical incident set.
 
+## Jira Workflow
+
+In production, the sales/support team creates the ticket in Jira. Jira sends an issue-created
+webhook to Throughline, and Throughline fetches the full issue by key before generating the brief.
+For a local live test:
+
+```powershell
+ngrok http 8000
+```
+
+Create a Jira webhook or Jira Automation "Send web request" action:
+
+- URL: `https://<your-tunnel>/integrations/jira/webhook`
+- Optional secret: `https://<your-tunnel>/integrations/jira/webhook?secret=<JIRA_WEBHOOK_SECRET>`
+- Event: issue created only
+
+For the strongest demo match, create the Jira issue with:
+
+- Summary: `Payments failing intermittently at checkout.`
+- Labels: `customer:Acme-Corp`, `component:PaymentService`, `sentry:StripeTimeout`
+
+If the tunnel or Jira delivery lags during the demo, trigger the reliable fallback:
+
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8000/integrations/jira/issues/ESC-1/brief" -Method Post
+```
+
 ## Judge Demo Script
 
-1. Start backend and frontend, then open the command-center page.
-2. Click `Backfill demo memory`; point out that this calls Cognee `remember()`.
-3. Create the Acme `PaymentService` / `StripeTimeout` escalation or import a configured Jira key.
+1. Open the dashboard.
+2. Run `scripts/reset_demo.py` before recording so the list and stats are clean.
+3. Import a configured Jira key or create a Jira issue that fires the webhook.
 4. Show the recalled path `PaymentService -> INC-2024-11 -> PR #1290 -> Priya`.
-5. Explain the generated brief: matched incident, recommended fix, source evidence, and next steps.
-6. Click a feedback button and show the `improve()` status.
-7. Use Slack share if `SLACK_WEBHOOK_URL` is configured; otherwise show the button's real config error.
-8. Run customer forget for `Acme Corp` and show the completed `forget()` count.
-
-For hackathon judging, the Jira/Slack controls are intentionally real but optional: the app remains
-demoable without leaking credentials, and the integration health badges make that transparent.
+5. Explain the generated brief: matched incident, recommended fix, source links, and graph signals.
+6. Click a feedback button and mention the session-scoped `improve()` call.
+7. Use Slack share if `SLACK_WEBHOOK_URL` is configured; otherwise show the honest config error.
+8. Use the dashboard Customers section to forget `Acme Corp` with confirmation.
 
 ## Verification
 
