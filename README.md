@@ -17,9 +17,11 @@ Cognee is the memory engine behind Throughline. The project uses Cognee to store
 Throughline uses Cognee for four core memory actions:
 
 - Remember: ingest a resolved Jira ticket and store the incident as reusable memory.
-- Recall: compare a new Jira escalation against past incidents and surface related context.
-- Improve: capture user feedback when the recalled context is helpful or needs correction.
+- Recall: compare a new Jira escalation against past incidents using graph context (shared customer, component, and error class rather than surface keywords) and surface related context.
+- Improve: capture user feedback when the recalled context is helpful or needs correction, and feed it back into the memory.
 - Forget: remove customer-specific memory when a reset, demo cleanup, or privacy action is needed.
+
+A deliberate design choice: recall is grounded in shared graph entities (component, error class), so Throughline does not force a match just because two tickets share a generic word like "timeout." When nothing genuinely connects, it says "no prior match" rather than inventing a link.
 
 ## Demo Story
 
@@ -37,11 +39,11 @@ This gives judges a practical story: the app helps a support engineer avoid redi
 
 - Real Jira import using Jira issue keys or URLs.
 - Cognee-backed incident memory for resolved support issues.
-- Similarity recall for new escalations.
+- Graph-based context recall for new escalations, grounded in shared component and error class.
 - Customer, component, error class, root cause, fix, and owner extraction from ticket descriptions.
 - Incident dashboard with current imported briefs.
 - Brief detail page with recalled context and evidence.
-- Slack escalation sharing through an incoming webhook.
+- Shareable brief link for stakeholders and engineering channels, with optional Slack delivery via an incoming webhook (when `SLACK_WEBHOOK_URL` is configured).
 - Customer-level forget/reset workflow for demo cleanup and privacy.
 - Feedback capture to mark recalled context as helpful or corrected.
 - Local SQLite dashboard state plus Cognee memory state.
@@ -55,7 +57,7 @@ flowchart LR
     Parser --> Cognee["Cognee Memory"]
     Cognee --> Recall["Related Context Recall"]
     API --> DB["Local SQLite Brief Store"]
-    API --> Slack["Slack Webhook"]
+    API --> Slack["Slack Webhook (optional)"]
     API --> UI["React + Vite Frontend"]
     UI --> Dashboard["Incident Dashboard"]
     UI --> Brief["Brief Detail View"]
@@ -67,7 +69,8 @@ flowchart LR
 - Backend: FastAPI, Python
 - Memory: Cognee
 - Persistence: SQLite for local brief state
-- Integrations: Jira REST API, Slack incoming webhook
+- Integrations: Jira REST API, Slack incoming webhook (optional)
+- LLM: OpenAI models (used by Cognee for extraction/recall and by the brief synthesizer)
 - Demo workflow: local app with real Jira tickets
 
 ## Setup
@@ -104,7 +107,7 @@ JIRA_EMAIL=your-email@example.com
 JIRA_API_TOKEN=your_jira_api_token
 JIRA_WEBHOOK_SECRET=optional_shared_secret
 
-SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...   # optional
 ```
 
 ## Run Locally
@@ -188,15 +191,17 @@ Need: Investigate eligibility cache invalidation after manual verification.
 Impact: Front desk staff may incorrectly ask patients to self-pay.
 ```
 
+Note: recall works best when the resolved ticket and the new ticket share the same `Component` and `Error` values — that shared graph context is what Throughline matches on.
+
 ## Suggested Judge Demo Flow
 
 1. Show the Jira tickets first so the demo feels real.
 2. Open Throughline and confirm the dashboard is empty after reset.
-3. Import the resolved Jira ticket to teach Throughline the past incident.
+3. Import the resolved Jira ticket to teach Throughline the past incident. Allow it to finish ingesting (the resolved ticket must be fully stored in memory before the related ticket is imported).
 4. Import the new related Jira ticket.
 5. Open the generated brief and show the recalled prior incident, root cause, fix, owner, and evidence.
-6. Import the unrelated Jira ticket to show that unrelated context stays separate.
-7. Share the brief to Slack and mark the recall as helpful or corrected.
+6. Import the unrelated Jira ticket to show that unrelated context stays separate ("no prior match").
+7. Open the brief's shareable link (and share to Slack if a webhook is configured), then mark the recall as helpful or provide a corrected fix.
 8. Use customer forget/reset to show the memory lifecycle.
 
 ## API Highlights
@@ -205,8 +210,8 @@ Impact: Front desk staff may incorrectly ask patients to self-pay.
 - `GET /briefs` lists imported incident briefs.
 - `GET /briefs/{brief_id}` returns one brief.
 - `POST /integrations/jira/issues/{issue_key}/brief` imports a Jira issue and creates a brief.
-- `POST /briefs/{brief_id}/feedback` records helpful or corrected recall feedback.
-- `POST /briefs/{brief_id}/share/slack` sends an escalation summary to Slack.
+- `POST /briefs/{brief_id}/feedback` records helpful or corrected recall feedback (drives Improve).
+- `POST /briefs/{brief_id}/share/slack` sends an escalation summary to Slack (optional; requires `SLACK_WEBHOOK_URL`).
 - `POST /customers/{name}/forget` removes customer memory and local briefs.
 
 ## Hackathon Positioning
@@ -214,3 +219,12 @@ Impact: Front desk staff may incorrectly ask patients to self-pay.
 Throughline is not a generic chatbot. It is a focused support workflow that uses Cognee as long-term operational memory. The project demonstrates how memory can become part of the escalation process: remember a resolved incident, recall it during a similar future ticket, improve the memory with feedback, and forget customer data when needed.
 
 The result is a practical demo for support, customer success, and engineering teams that need faster incident triage with less repeated investigation.
+
+## AI Assistance
+
+In keeping with the hackathon's disclosure requirement, we used AI assistants during development:
+
+- OpenAI Codex — code generation and implementation.
+- Claude (Anthropic) — architecture, design, and planning support.
+
+At runtime, the application itself uses OpenAI models (via Cognee for extraction and recall, and for brief synthesis). All architectural decisions, integration, testing, and final code were reviewed and directed by the team.
